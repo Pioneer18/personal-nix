@@ -150,6 +150,22 @@ Any field auto-extracted from the issue body (e.g., quality bar in `--issue` mod
 
 Show enough that the user can spot wrong commands, fuzzy stop conditions, or scope mistakes without a separate review step. Don't dump the entire template — the agent reads the full file at iteration time. Boilerplate template scaffolding (`{{COMMIT_INSTRUCTIONS}}`, `{{COMPLETION_INSTRUCTIONS}}`) is omitted from the preview.
 
+**Section B.5 — AFK permission preflight (AFK mode only).** Skip entirely for `--once` mode. For `--afk N`, the Phase 5 launch is `nohup .tachikoma/tachikoma.sh --afk N > .tachikoma/run.log 2>&1 & disown`, which Claude Code's auto-mode classifier blocks unless `Bash(nohup *)` is in the user's settings allowlist. Check up front so the user isn't surprised at launch time:
+
+1. Read `.claude/settings.json` and `.claude/settings.local.json` from the cwd worktree (project-level), then `~/.claude/settings.json` (user-level). Look in each file's `permissions.allow` array for any token that would cover the launch — exact matches `Bash(nohup *)` or `Bash(nohup .tachikoma/tachikoma.sh *)`, or a permissive parent like `Bash(*)`. Any one match is sufficient; absence of all three files is treated the same as no match.
+2. **If a matching permission is present:** silently continue to Section C.
+3. **If no matching permission is present:** warn the user before launch and offer to add it. Render exactly:
+
+   > ⚠ AFK launch will likely be blocked — `Bash(nohup *)` is not in your `.claude/settings.json` allowlist. Without it, Claude Code's auto-mode classifier will refuse the `nohup ... & disown` invocation when Phase 5 fires it, and you'll have to retry or run it yourself.
+   >
+   > Add `Bash(nohup *)` to project `.claude/settings.json` via `/update-config` before launch? (yes / no / show)
+
+4. **On `yes`:** invoke the `update-config` skill with the request `add "Bash(nohup *)" to permissions.allow in project-level .claude/settings.json`. Wait for it to complete, then re-read the file to verify the entry now appears. Continue to Section C.
+5. **On `no`:** continue to Section C unchanged. The Phase 5 blocked-launch fallback (see `--afk N` below) will still print the `!` recovery command if the launch is in fact blocked, so the user has a clear next step.
+6. **On `show`:** print the exact JSON delta `/update-config` would apply (the `Bash(nohup *)` token added to `permissions.allow`, with surrounding context for clarity), then re-ask the yes/no/show question.
+
+This preflight runs only in Phase 1 (initial planning). Phase R's Resume path does not re-run it — the Phase 5 blocked-launch fallback covers re-launches.
+
 **Section C — Launch confirmation.** Ask exactly one question, phrased per iteration mode:
 - AFK mode: *"Launch the AFK loop (cap N)?"*
 - Once mode: *"Launch foreground loop?"*
@@ -298,6 +314,23 @@ Launch backgrounded and detached so it survives this session ending:
 ```bash
 cd <WORKTREE_PATH> && nohup .tachikoma/tachikoma.sh --afk N > .tachikoma/run.log 2>&1 & disown
 ```
+
+**If the launch is blocked** by Claude Code's auto-mode classifier (the Bash tool call returns a permission/auto-block error rather than backgrounding the process), do NOT just re-prompt for retry. Immediately surface a recovery path with both options the user actually has:
+
+> ✗ Auto-mode classifier blocked the AFK launch — `nohup ... & disown` is not in your `.claude/settings.json` allowlist.
+>
+> Two ways forward:
+>
+> **1. Add the permission so future AFK launches just work** (`/update-config`):
+>    `/update-config add "Bash(nohup *)" to permissions.allow`
+>    Then I'll retry the launch.
+>
+> **2. Run it yourself right now via `!` escape** (paste this verbatim into the prompt):
+>    `!cd <WORKTREE_PATH> && nohup .tachikoma/tachikoma.sh --afk N > .tachikoma/run.log 2>&1 & disown`
+>    The `!` prefix bypasses the classifier. The loop will start immediately and survive this session ending.
+
+Substitute the real `<WORKTREE_PATH>` and `N` into the `!` command — it must be paste-ready, not a placeholder. If the user picks option 1, after `update-config` finishes, retry the original Bash launch once before falling back to option 2 again. If the user picks option 2, wait for them to confirm they ran it, then read `<WORKTREE_PATH>/.tachikoma/run.pid` to capture the PID for the post-launch message below. Either way the user always sees the `!` command — never just a bare retry prompt.
+
 After launch, give the user a compact post-launch message with these pointers (in this order):
 - **Worktree**: `<WORKTREE_PATH>`
 - **PID**: `<pid>`, branch `<TACHIKOMA_BRANCH>` (off `<BASE_BRANCH>`), cap `N` iterations
