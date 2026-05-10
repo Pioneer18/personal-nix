@@ -1,56 +1,80 @@
 ---
 name: ralph
-description: Autonomous AI coding loop. Interviews for a goal, generates a PRD (local JSON, GitHub greenfield, or existing GitHub issue), launches a capped `claude -p` loop, then walks you through squash-merge / PR / issue-close. Survives interruption (resumable from disk state). Triggers — `/ralph`, `/ralph --remote`, `/ralph --issue <ref>`, `/ralph done`, `/ralph resume`, `/ralph status` (alias `/ralph t`), `/ralph stop`, or any natural-language request to start, check on, recover, or wrap up a Ralph run ("kick off Ralph on issue #138", "AFK this backlog", "check the ralph status", "did ralph finish", "resume the ralph loop"). For methodology, see Matt Pocock's aihero.dev article and the Ralph SOP.
+description: Autonomous AI coding loop. Interviews for a goal, generates a PRD (local JSON, GitHub greenfield, or existing GitHub issue), launches a capped `claude -p` loop in its own git worktree, then walks you through squash-merge / PR / issue-close. Multiple ralphs can run concurrently on the same codebase — each in its own sibling worktree. Survives interruption (resumable from disk state). Triggers — `/ralph`, `/ralph --remote`, `/ralph --issue <ref>`, `/ralph done`, `/ralph resume`, `/ralph status` (alias `/ralph t`), `/ralph stop`, or any natural-language request to start, check on, recover, or wrap up a Ralph run ("kick off Ralph on issue #138", "AFK this backlog", "check the ralph status", "did ralph finish", "resume the ralph loop"). For methodology, see Matt Pocock's aihero.dev article and the Ralph SOP.
 ---
 
 # Ralph
 
 Autonomous AI coding loop. The user provides an end-state; Ralph picks tasks, implements one per iteration, runs feedback loops, commits, and repeats until done or capped.
 
+## Worktree model
+
+Every Ralph run gets its own **git worktree**, sibling to the main repo:
+
+```
+<main-parent>/<repo>-ralph-<slug>/
+```
+
+This is what lets you run multiple ralphs on the same codebase in parallel — each in its own branch, working directory, and `.ralph/` state. The main repo can stay dirty during a run; `git worktree add` only needs HEAD, not a clean working tree.
+
+Discovery for `status`, `stop`, `done`, `resume` is **per-repo via `git worktree list`**. No global registry. Cross-repo concurrency (one ralph on `platform`, another on `personal-nix`) keeps working as before — different repos, different `.git` dirs.
+
+When you run `/ralph` inside any worktree (the main repo, a feature-branch worktree, or anywhere else in the repo), the orchestrator computes the **main repo path** via `git rev-parse --path-format=absolute --git-common-dir` (then `dirname`). New worktrees go as siblings of *that*, regardless of cwd. The new branch is created off **cwd-worktree's HEAD**, so you can ralph-off-a-feature-branch by `cd`ing into the worktree that holds it.
+
+Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the new ralph worktree, `BASE_BRANCH` = the branch the ralph branched off, `RALPH_BRANCH` = `ralph/<slug>`. The orchestrator's own cwd never matters for any operation — every git command uses `git -C <path>`.
+
 ## Invocation
 
 | Form | Behavior |
 |---|---|
-| `/ralph` | Plan + run, **local mode** (PRD lives in `plans/prd.json`, deleted on completion) |
-| `/ralph --remote` | Plan + run, **remote-greenfield mode** (PRD → `to-prd` → `to-issues` → auto-promoted to `ready-for-agent`) |
-| `/ralph --issue <ref>` | Plan + run, **existing-issue mode** — uses a GitHub issue body as the PRD; loop scoped to that single issue |
-| `/ralph done` | Manually trigger Phase 6 (post-completion review: squash-merge, branch cleanup, optional PR, optional issue close) for a loop that finished without your interaction. Auto-triggered when `/ralph` is invoked with no args in a repo where `.ralph/outcome` is `complete`. |
-| `/ralph resume` | Re-launch a previously interrupted loop. Agent reads `.ralph/progress.txt` + the PRD and picks up at the next unfinished task. Auto-offered when `/ralph` (no args) is run in a repo with partial state. |
-| `/ralph status` (alias `/ralph t`) | Telemetry check on a running or recently-finished loop. Shows PID liveness, current iter, last milestone banner, last progress note, recent log lines. Read-only — does not interrupt the loop. |
-| `/ralph stop` | SIGTERM the running loop in cwd via `.ralph/run.pid` |
+| `/ralph` | Plan + run, **local mode**. Creates a new sibling worktree, scaffolds in it, launches loop. PRD in `plans/prd.json`, deleted on completion. |
+| `/ralph --remote` | Plan + run, **remote-greenfield mode**. PRD → `to-prd` → `to-issues` → auto-promoted to `ready-for-agent`. New worktree per run. |
+| `/ralph --issue <ref>` | Plan + run, **existing-issue mode** — uses a GitHub issue body as the PRD; loop scoped to that single issue. New worktree per run. |
+| `/ralph done` (optionally `<slug>`) | Manually trigger Phase 6. With `<slug>`, picks that specific completed worktree; otherwise picker if multiple complete, auto-pick if one. Auto-triggered when `/ralph` (no args) is run with a single completed worktree in the repo. |
+| `/ralph resume` (optionally `<slug>`) | Re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. Auto-offered when `/ralph` (no args) is run with recoverable state. |
+| `/ralph status` (alias `/ralph t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all ralph worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
+| `/ralph stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a ralph worktree. Picker if >1 running. `--all` halts every running ralph in the repo. |
 
 `<ref>` accepts: `#138`, `138`, or `org/repo#138`. The `org/repo` form must match the cwd repo's `nameWithOwner`; if not, refuse and tell the user to `cd` first.
 
-If the user types `/ralph` while a lockfile already exists at `.ralph/run.pid` and the PID is alive, refuse and tell them to `/ralph stop` or kill the PID.
+`<slug>` matches against the trailing slug of the worktree's branch name (e.g. `issue-138-fix-vital-age` matches `ralph/issue-138-fix-vital-age`). Substring match is OK if unambiguous; otherwise refuse and list candidates.
+
+Multiple ralphs can run concurrently in the same repo (in separate worktrees). The per-worktree lockfile (`<wt>/.ralph/run.pid`) prevents two loops in the same worktree, but loops in *different* worktrees of the same repo are fine and expected.
 
 ## Preconditions (refuse with explanation if violated)
 
 1. cwd must be inside a git repo (`git rev-parse --git-dir`).
 2. Repo must have at least one commit (`git rev-parse HEAD` succeeds). Unborn repo = refuse; tell user to `git commit --allow-empty -m init` first. Without this, the loop's dirty-tree check, `git log` references, and squash-merge guidance all break.
-3. Working tree must be clean (`git status --porcelain` empty). Dirty tree = refuse; tell user to commit/stash first.
-4. `claude` CLI on PATH (`command -v claude`).
-5. For `--remote` and `--issue`: `gh` CLI on PATH and authenticated (`gh auth status`).
-6. For `--issue <ref>`:
+3. ~~Working tree must be clean.~~ **Relaxed.** With worktree mode, the ralph branch is created off cwd's HEAD via `git worktree add`, which only needs HEAD — the cwd's working tree may be dirty. (The new worktree's working tree is clean by construction.)
+4. **cwd must NOT be an active ralph worktree.** Refuse if either is true: (a) `<cwd>/.ralph/run.pid` exists and the PID is alive, (b) `git -C <cwd> rev-parse --abbrev-ref HEAD` matches `ralph/*`. Reason: branching off a mid-ralph state would inherit half-finished commits. Tell user to `cd` to the main repo or a non-ralph worktree.
+5. `claude` CLI on PATH (`command -v claude`).
+6. `git worktree` available (Git ≥ 2.5; assume yes on macOS, but verify with `git worktree list` and refuse if it errors).
+7. For `--remote` and `--issue`: `gh` CLI on PATH and authenticated (`gh auth status`).
+8. For `--issue <ref>`:
    - The issue must exist and be open (`gh issue view <num> --json state,title,body,labels` succeeds and `state == OPEN`). If closed, refuse; user can reopen if they really mean it.
    - The cwd repo's `nameWithOwner` must match the ref's repo (if user passed `org/repo#N`). If mismatch, refuse — `cd` first.
    - The label vocabulary must be set up in the target repo (`gh label list --limit 100` includes a label that maps to `ready-for-agent`). If absent, tell user to run `/setup-matt-pocock-skills` against this repo first.
-7. `.ralph/` and `plans/` may contain partial state from a previous run. Read it carefully and route — do NOT just refuse. State-detection sequence:
+9. **No worktree-path or branch collision.** Compute `WORKTREE_PATH` and `RALPH_BRANCH` (Phase 3) and check up front:
+   - If `<WORKTREE_PATH>` already exists (file or dir): refuse with the path.
+   - If `git -C <MAIN_REPO> show-ref --verify --quiet refs/heads/<RALPH_BRANCH>` succeeds: refuse — that branch already exists. Tell user to delete it first or pick a different goal/issue.
+   - For `--issue <N>` re-runs against the same issue: this collision is the expected guard. Tell user to clean up the old worktree (`git worktree remove ...; git branch -D ralph/issue-<N>-...`) or finish/abandon the existing run.
+10. **State detection across worktrees.** Some `.ralph/` may exist in some worktree of this repo. Enumerate via `git worktree list --porcelain`, then for each worktree check:
 
-   **a. Is the loop still alive?** If `.ralph/run.pid` exists and `kill -0 <pid>` succeeds:
-      → Refuse: "loop running at PID <X>; use `/ralph stop` or `kill <X>` first."
+   **a. Loop still alive?** `<wt>/.ralph/run.pid` exists and `kill -0 <pid>` succeeds. Note the worktree as RUNNING.
 
-   **b. Is the working tree dirty?** If `git status --porcelain` is non-empty (regardless of outcome):
-      → Refuse: state is inconsistent — a prior iteration probably crashed mid-commit. User must `git status`, then commit/stash/reset, then re-run `/ralph`.
+   **b. Outcome on disk?** Read `<wt>/.ralph/outcome` if present. Values: `complete`, `cap`, `error`, `stopped`.
 
-   **c. Did the previous run complete cleanly?** If `.ralph/outcome` is `complete`:
-      → Route to Phase 6 (post-completion review). Don't refuse; this is their finished run waiting for merge.
+   **c. Stale lockfile?** `<wt>/.ralph/run.pid` exists with a dead PID — treat as crash, recoverable.
 
-   **d. Did the previous run end in a recoverable state?** If `.ralph/outcome` is `cap`, `error`, or `stopped`, OR if the lockfile exists with a dead PID (crash, no graceful cleanup):
-      → Enter **Phase R: recovery** (below). Show the user the partial state and offer three paths.
+   **d. Working tree dirty inside a worktree with state?** `git -C <wt> status --porcelain` non-empty + `.ralph/` present — that worktree's loop crashed mid-commit. Surface to user; resume blocked until they clean up that specific worktree.
 
-   **e. Pure stale clutter** (e.g., `.ralph/` exists but nothing inside is meaningful): ask whether to clean.
-
-Ralph branches to `ralph/<slug>` off whatever HEAD is. Being on `main`/`master` is fine — Ralph never commits there. Capture the base branch name (`git rev-parse --abbrev-ref HEAD`) before branching so you can show it to the user and reference it in completion guidance.
+   Routing depends on what the user just typed:
+   - `/ralph` (no args) with **one** completed worktree → Phase 6 on it.
+   - `/ralph` (no args) with **one** interrupted/recoverable worktree → Phase R on it.
+   - `/ralph` (no args) with **multiple** terminal worktrees (any combination of complete/recoverable) → present picker; let user choose which to act on.
+   - `/ralph` (no args) with only RUNNING worktrees → tell user "N ralphs running. `/ralph status` to see them, `/ralph stop` to halt one."
+   - `/ralph <new-args>` (start a new run) — terminal worktrees in the repo are NOT a blocker. Proceed to Phase 1; the user is starting an additional ralph alongside whatever's there.
+   - Pure stale clutter in some worktree (`.ralph/` with nothing meaningful) — ignore unless user is explicitly acting on that worktree.
 
 ## Phase 1: planning grill
 
@@ -84,7 +108,12 @@ In **`--issue <ref>` mode**: fetch the issue first (`gh issue view <num> --json 
 
 ### Grill output
 
-After the grill, summarize all fields in a numbered list — including **Base branch** (current HEAD, where `ralph/<slug>` will be rooted and where you'll merge back at the end) and **Ralph branch** (the computed `ralph/<slug>` name). Ask "Approved?" before proceeding.
+After the grill, summarize all fields in a numbered list — including:
+- **Base branch** (cwd-worktree's current HEAD, where `ralph/<slug>` will be rooted and where Phase 6 will merge back)
+- **Ralph branch** (the computed `ralph/<slug>` name)
+- **Worktree path** (the sibling dir that will be created via `git worktree add`)
+
+Ask "Approved?" before proceeding to Phase 2/3.
 
 ## Phase 2: PRD synthesis (mode-forked)
 
@@ -135,170 +164,271 @@ The issue **is** the PRD. No `to-prd`/`to-issues` calls; no `plans/prd.json`.
 
 If the issue is already labeled `ready-for-agent` and has a recent agent-brief comment from a prior `/ralph` invocation, ask the user whether to repost a fresh brief or reuse the existing one.
 
-## Phase 3: branch + scaffolding
+## Phase 3: worktree creation + scaffolding
 
-1. Compute slug. Source depends on mode:
+1. **Compute slug.** Source depends on mode:
    - Local / Remote-greenfield: derive from grill goal.
-   - `--issue`: derive from issue title — `ralph/issue-<N>-<slug-of-title>`. Keeps the issue number in the branch name for traceability.
+   - `--issue`: derive from issue title — `issue-<N>-<slug-of-title>`. Keeps the issue number for traceability.
 
    Slug normalization in all cases: lowercase, alphanumeric + dashes, max 40 chars.
-2. `git checkout -b ralph/<slug>` (or `ralph/issue-<N>-<slug>` in `--issue` mode).
-3. Create `.ralph/` directory.
-4. Append `.ralph/` to repo's `.gitignore` if not already ignored.
-5. Render `.ralph/ralph.sh` from [ralph.sh.tmpl](ralph.sh.tmpl). `chmod +x`.
-6. Render `.ralph/prompt.md` from [prompt.md.tmpl](prompt.md.tmpl).
-7. In **local** mode only: write `plans/prd.json`. (Remote-greenfield and `--issue` modes read from the tracker per iteration.)
-8. **Commit the scaffolding** before launching. The loop requires a clean working tree at iteration start; uncommitted scaffolding will trip its `git status --porcelain` check immediately.
-   - Local: `git add .gitignore plans/prd.json && git commit -m "chore: scaffold ralph loop for <slug>"`
-   - Remote-greenfield: `git add .gitignore && git commit -m "chore: scaffold ralph loop for <slug>"`
-   - `--issue`: `git add .gitignore && git commit -m "chore: scaffold ralph loop for issue #<N>"`
-   - `.ralph/` itself is gitignored — the rendered scripts/logs do not get committed.
+
+2. **Compute paths and capture variables:**
+   - `MAIN_REPO` = `dirname` of `git -C <cwd> rev-parse --path-format=absolute --git-common-dir`. This is the main worktree's path regardless of which worktree the user invoked from.
+   - `REPO_NAME` = `basename "$MAIN_REPO"` (e.g. `platform`).
+   - `RALPH_BRANCH` = `ralph/<slug>` (e.g. `ralph/issue-138-fix-vital-age`).
+   - `WORKTREE_PATH` = `<dirname $MAIN_REPO>/<REPO_NAME>-ralph-<slug>` (e.g. `/Users/pioneer/Projects/platform-ralph-issue-138-fix-vital-age`).
+   - `BASE_BRANCH` = `git -C <cwd> rev-parse --abbrev-ref HEAD` — captured from the **cwd worktree**, not main repo. This is the branch the new ralph branches off, and the merge target for Phase 6.
+
+3. **Collision check** (precondition 9 applied here in detail):
+   - If `<WORKTREE_PATH>` exists: refuse with the exact path. Tell user to remove it (`git -C <MAIN_REPO> worktree remove <WORKTREE_PATH>`) or pick a different goal.
+   - If `<RALPH_BRANCH>` already exists (`git -C <MAIN_REPO> show-ref --verify --quiet refs/heads/<RALPH_BRANCH>`): refuse and tell user to delete it (`git -C <MAIN_REPO> branch -D <RALPH_BRANCH>`) or finish/abandon the existing run.
+
+4. **Create the worktree:**
+   ```bash
+   git -C <MAIN_REPO> worktree add <WORKTREE_PATH> -b <RALPH_BRANCH> <BASE_BRANCH>
+   ```
+   This creates the worktree directory, the new branch, and checks the branch out in that worktree.
+
+5. **Scaffold inside the worktree.** All paths below are relative to `<WORKTREE_PATH>`:
+   - Append `.ralph/` to `<WORKTREE_PATH>/.gitignore` if not already there.
+   - Create `<WORKTREE_PATH>/.ralph/`.
+   - Render `<WORKTREE_PATH>/.ralph/ralph.sh` from [ralph.sh.tmpl](ralph.sh.tmpl). **Set `{{REPO_PATH}} = WORKTREE_PATH`** (the script's `cd "$REPO"` keeps everything inside the worktree). `chmod +x`.
+   - Render `<WORKTREE_PATH>/.ralph/prompt.md` from [prompt.md.tmpl](prompt.md.tmpl).
+   - Write `<WORKTREE_PATH>/.ralph/base_branch` — single line containing `<BASE_BRANCH>`. Phase 6 reads this to know the merge target. (Conversation context isn't enough — AFK runs span sessions.)
+   - In **local** mode only: write `<WORKTREE_PATH>/plans/prd.json`.
+
+6. **Commit the scaffolding inside the worktree** so the loop's first iteration has a clean tree. Use `git -C <WORKTREE_PATH>`:
+   - Local: `git -C <WORKTREE_PATH> add .gitignore plans/prd.json && git -C <WORKTREE_PATH> commit -m "chore: scaffold ralph loop for <slug>"`
+   - Remote-greenfield: `git -C <WORKTREE_PATH> add .gitignore && git -C <WORKTREE_PATH> commit -m "chore: scaffold ralph loop for <slug>"`
+   - `--issue`: `git -C <WORKTREE_PATH> add .gitignore && git -C <WORKTREE_PATH> commit -m "chore: scaffold ralph loop for issue #<N>"`
+   - `.ralph/` itself is gitignored — rendered scripts, logs, and `base_branch` do not get committed.
+
+7. **Print the worktree path prominently.** The orchestrator's cwd doesn't change, so the user needs the path to tail logs, open the worktree in an editor, or cd there manually. Format:
+   ```
+   Worktree: <WORKTREE_PATH>
+   Branch:   <RALPH_BRANCH>  (off <BASE_BRANCH>)
+   Tail:     tail -f <WORKTREE_PATH>/.ralph/run.log
+   ```
 
 ## Phase 4: prompt review (mandatory)
 
-Show the user the rendered `.ralph/prompt.md` in full. Ask "Launch?" — only proceed on explicit approval. If user requests edits, edit `.ralph/prompt.md` and re-show.
+Show the user the rendered `<WORKTREE_PATH>/.ralph/prompt.md` in full. Ask "Launch?" — only proceed on explicit approval. If user requests edits, edit the file in the worktree and re-show.
 
 ## Phase 5: launch
+
+The orchestrator's cwd doesn't matter — both modes `cd` into `<WORKTREE_PATH>` first.
 
 ### `--once`
 Run via Bash tool in foreground:
 ```bash
-.ralph/ralph.sh --once
+cd <WORKTREE_PATH> && .ralph/ralph.sh --once
 ```
-Stream output. When it exits, show the user `cat .ralph/progress.txt`, then **immediately enter Phase 6** (the orchestrator is still in-session; don't print manual git instructions).
+Stream output. When it exits, show the user `cat <WORKTREE_PATH>/.ralph/progress.txt`, then **immediately enter Phase 6** (the orchestrator is still in-session; don't print manual git instructions).
 
 ### `--afk N`
 Launch backgrounded and detached so it survives this session ending:
 ```bash
-nohup .ralph/ralph.sh --afk N > .ralph/run.log 2>&1 & disown
+cd <WORKTREE_PATH> && nohup .ralph/ralph.sh --afk N > .ralph/run.log 2>&1 & disown
 ```
-After launch, give the user a compact post-launch message with these four pointers (in this order):
-- **PID**: `<pid>`, branch `<ralph-branch>`, cap `N` iterations, log `.ralph/run.log`
-- **Check in**: `/ralph status` (or `/ralph t`) — read-only telemetry, doesn't interrupt the loop
-- **Stop**: `/ralph stop` or `kill <pid>`
-- **When done**: macOS notification fires; then `/ralph` (no args) auto-routes to Phase 6 for review/merge/PR
+After launch, give the user a compact post-launch message with these pointers (in this order):
+- **Worktree**: `<WORKTREE_PATH>`
+- **PID**: `<pid>`, branch `<RALPH_BRANCH>` (off `<BASE_BRANCH>`), cap `N` iterations
+- **Tail**: `tail -f <WORKTREE_PATH>/.ralph/run.log`
+- **Check in**: `/ralph status` (or `/ralph t`) — read-only telemetry across all running ralphs in this repo
+- **Stop**: `/ralph stop` (picker if >1 running) or `kill <pid>`
+- **When done**: macOS notification fires; then `/ralph` (no args) auto-routes to Phase 6. If multiple loops are done, picker chooses which to merge.
 
-Do NOT print manual `git log`/`git merge`/`git branch -D` instructions — Phase 6 handles those.
+Do NOT print manual `git log`/`git merge`/`git branch -D`/`git worktree remove` instructions — Phase 6 handles those.
 
 ## Phase 6: post-completion review
 
 Triggered when:
-- `--once` mode finishes (orchestrator transitions immediately)
-- User runs `/ralph done` in a repo with a finished loop
-- User runs `/ralph` with no args in a repo where `.ralph/outcome` is `complete`
+- `--once` mode finishes (orchestrator transitions immediately, with `WORKTREE_PATH` already known from this session).
+- User runs `/ralph done` (optionally `/ralph done <slug>`).
+- User runs `/ralph` with no args and exactly one worktree of this repo has `.ralph/outcome=complete`.
+- User runs `/ralph` with no args, **multiple** worktrees have terminal outcomes, and they pick a complete one from the picker.
 
-**Step 1 — Show what changed.** Run both:
+**Step 0 — Pick the ralph worktree, capture variables.**
+
+Enumerate via `git -C <cwd> worktree list --porcelain`. For each worktree, check `<wt>/.ralph/outcome`. Among those with `outcome=complete`:
+- If exactly one: that's `WORKTREE_PATH`.
+- If user passed `/ralph done <slug>`: match against the worktree's branch name; refuse if no match.
+- Otherwise: present picker via AskUserQuestion. (`--once` mode skips this — the orchestrator already knows.)
+
+Then capture:
+- `WORKTREE_PATH` — chosen above.
+- `RALPH_BRANCH` = `git -C <WORKTREE_PATH> rev-parse --abbrev-ref HEAD` (must start with `ralph/`; refuse if not).
+- `BASE_BRANCH` = contents of `<WORKTREE_PATH>/.ralph/base_branch` (single line). Fallback: ask user. Without this we can't safely merge.
+- `MAIN_REPO` = `dirname` of `git -C <WORKTREE_PATH> rev-parse --path-format=absolute --git-common-dir`.
+
+**Step 1 — Locate the base-worktree.**
+
+Find the worktree where `<BASE_BRANCH>` is currently checked out (parse `git -C <MAIN_REPO> worktree list --porcelain` for `branch refs/heads/<BASE_BRANCH>`). Call it `BASE_WT`.
+
+- If found: continue.
+- If not found (base branch isn't checked out anywhere): the main worktree is the place to do the merge. Set `BASE_WT = MAIN_REPO`. We'll check out `<BASE_BRANCH>` there in Step 2 — but only if `MAIN_REPO`'s working tree is clean.
+
+**Step 2 — Verify base-worktree is clean.**
+
+Run `git -C <BASE_WT> status --porcelain`. If non-empty: refuse with a clear message naming the path. The user must commit/stash/discard work in `<BASE_WT>` before we can merge there. Do NOT auto-stash — stash conflicts on pop are worse than the friction.
+
+**Step 3 — Show what changed.** Run:
 ```bash
-git log <ralph-branch> ^<base-branch> --oneline
-git diff <base-branch>...<ralph-branch> --stat
+git -C <WORKTREE_PATH> log <RALPH_BRANCH> ^<BASE_BRANCH> --oneline
+git -C <WORKTREE_PATH> diff <BASE_BRANCH>...<RALPH_BRANCH> --stat
 ```
-Present output. Don't summarize — let the user see the raw commits and stat output.
+Present output verbatim. Don't summarize.
 
-**Step 2 — Offer squash-merge.** Ask: *"Squash-merge `<ralph-branch>` into `<base-branch>`?"*
+**Step 4 — Offer squash-merge.** Ask: *"Squash-merge `<RALPH_BRANCH>` into `<BASE_BRANCH>` (in worktree `<BASE_WT>`)?"*
 - On yes:
   ```bash
-  git checkout <base-branch>
-  git merge --squash <ralph-branch>
+  # If BASE_BRANCH wasn't checked out in MAIN_REPO yet:
+  git -C <BASE_WT> checkout <BASE_BRANCH>
+
+  # Merge:
+  git -C <BASE_WT> merge --squash <RALPH_BRANCH>
   ```
   Propose a commit message — for `--issue` mode use `<issue-title> (#<N>)\n\nCloses #<N>`; for local/remote use a summary derived from the goal. Show the proposed message and let user edit before:
   ```bash
-  git commit -m "<approved message>"
+  git -C <BASE_WT> commit -m "<approved message>"
   ```
-- On "let me review first" / no: exit Phase 6 quietly. User can re-trigger with `/ralph done` later.
+  Capture the new commit SHA for Step 7.
+- On "let me review first" / no: exit Phase 6 quietly. The worktree, branch, and `.ralph/outcome=complete` all stay — `/ralph done` works again later.
 
-**Step 3 — Offer branch cleanup.** Only after a successful merge: *"Delete `<ralph-branch>`?"*
-- On yes: `git branch -D <ralph-branch>` (force; squash-merge isn't fast-forward so plain `-d` would refuse).
+**Step 5 — Combined worktree + branch cleanup.** Only after a successful merge. Single prompt:
 
-**Step 4 — Offer PR.** Only if `git remote -v` shows a remote AND `gh auth status` succeeds: *"Push `<base-branch>` and open a PR?"*
+> *"Delete worktree `<WORKTREE_PATH>` and branch `<RALPH_BRANCH>`?"*
+
 - On yes:
-  - Push if needed: `git push -u origin <base-branch>` (or skip if already up to date)
-  - Open PR: `gh pr create --title "<derived>" --body "<derived>"`. For `--issue` mode, body should reference `Closes #<N>`. Show the proposed title/body and let user edit before running.
-  - Print the PR URL. Capture it for Step 5.
+  ```bash
+  git -C <MAIN_REPO> worktree remove <WORKTREE_PATH>
+  ```
+  If that fails because of untracked files (e.g. `.ralph/run.log`), retry with `--force`:
+  ```bash
+  git -C <MAIN_REPO> worktree remove --force <WORKTREE_PATH>
+  ```
+  Then delete the branch:
+  ```bash
+  git -C <MAIN_REPO> branch -D <RALPH_BRANCH>
+  ```
+  (`-D` is required — squash-merge isn't fast-forward, so `-d` would refuse.)
+- On no: leave both. User can clean up manually later via `git worktree remove ...` and `git branch -D ...`. They might want to copy something out of the worktree first.
+
+**Step 6 — Offer PR.** Only if `git -C <BASE_WT> remote -v` shows a remote AND `gh auth status` succeeds: *"Push `<BASE_BRANCH>` and open a PR?"*
+- On yes:
+  - Push if needed: `git -C <BASE_WT> push -u origin <BASE_BRANCH>`
+  - Open PR: `gh -R <owner/repo> pr create --title "<derived>" --body "<derived>" --base <default-branch> --head <BASE_BRANCH>`. For `--issue` mode, body should reference `Closes #<N>`. Show the proposed title/body and let user edit before running.
+  - Print the PR URL. Capture for Step 7.
 - On no: skip; user can do it manually later.
 
-**Step 5 — Offer to close the issue** *(`--issue` mode only)*. Ask: *"Close issue #<N> now?"*
+**Step 7 — Offer to close the issue** *(`--issue` mode only)*. Ask: *"Close issue #<N> now?"*
 
-Note: this is human-approved closure, not autonomous. The "agents don't close issues" convention applies to the AFK loop in Phase 5, NOT to Phase 6 where the user is actively approving every step.
+Note: this is human-approved closure, not autonomous. The "agents don't close issues" convention applies to the AFK loop in Phase 5, NOT to Phase 6.
 
-Smart default for the prompt:
-- If a PR was opened in Step 4 AND `<base-branch>` is the repo's default branch: recommend **"no"** — GitHub will auto-close on merge via the `Closes #<N>` line.
-- If a PR was opened but `<base-branch>` is NOT the default branch: recommend **"yes"** — the merge into a non-default branch won't trigger auto-close.
-- If no PR was opened (Step 4 skipped): recommend **"yes"** — there's nothing else that will close it.
+Smart default:
+- If a PR was opened in Step 6 AND `<BASE_BRANCH>` is the repo's default branch: recommend **"no"** — GitHub auto-closes on merge via `Closes #<N>`.
+- If a PR was opened but `<BASE_BRANCH>` is NOT the default: recommend **"yes"**.
+- If no PR was opened: recommend **"yes"**.
 
 On yes:
 ```bash
-gh issue close <N> --comment "Resolved via Ralph: squash-merged <ralph-branch> into <base-branch> as <commit-sha>.<pr-line-if-any>"
+gh issue close <N> --comment "Resolved via Ralph: squash-merged <RALPH_BRANCH> into <BASE_BRANCH> as <commit-sha>.<pr-line-if-any>"
 ```
 Where `<pr-line-if-any>` is `\nPR: <url>` if a PR was opened, else empty.
 
-On no: skip; user can close manually later via `gh issue close <N>`.
+**Step 8 — Final cleanup.**
+- If Step 5 user said yes: worktree (and `.ralph/`) are gone. Nothing more to do.
+- If Step 5 user said no: remove `<WORKTREE_PATH>/.ralph/outcome` so a future `/ralph` invocation doesn't keep routing to Phase 6 for this finished run:
+  ```bash
+  rm -f <WORKTREE_PATH>/.ralph/outcome
+  ```
+  Leave the rest of `.ralph/` (prompt, run.log, progress.txt) and the worktree itself for the user.
 
-**Step 6 — Cleanup.** Remove `.ralph/outcome` so the next `/ralph` invocation in this repo doesn't re-route to Phase 6:
-```bash
-rm -f .ralph/outcome
-```
-Leave the rest of `.ralph/` (the prompt, run.log, progress.txt) for the user's reference; they can `rm -rf .ralph/` themselves.
-
-**If user bails mid-Phase-6** (says no at any step): exit cleanly. The state is recoverable — `.ralph/outcome` stays, so `/ralph done` works again later. Phase 6 is idempotent; re-entering picks up where they left off (skip steps that are already done — e.g., if the merge already happened, skip Step 2 and resume at Step 3).
+**If user bails mid-Phase-6** (says no at Step 4): exit cleanly. State is recoverable — `<WORKTREE_PATH>/.ralph/outcome=complete` stays, so `/ralph done` works again later. Phase 6 is idempotent; re-entering picks up where they left off. Steps that already happened (already-merged, already-pushed) are detected by re-running the same probe (e.g. `git log <BASE_BRANCH>..<RALPH_BRANCH>` empty → already merged → skip to Step 5).
 
 ## Phase R: recovery from interruption
 
 Triggered when:
-- Precondition 7d detects partial state (outcome ∈ {cap, error, stopped} or stale lockfile with dead PID)
-- User runs `/ralph resume` explicitly
+- Precondition 10 detects an interruptable worktree: `.ralph/outcome ∈ {cap, error, stopped}` OR a stale lockfile (PID dead).
+- User runs `/ralph resume` explicitly (optionally `/ralph resume <slug>`).
 
-**Step 1 — Show what happened.** Read and present:
-- Last entry in `.ralph/progress.txt` (most recent iteration's note)
-- Last 30 lines of `.ralph/run.log` if it exists
-- Completed-task count: in local mode, count items where `passes: true` in `plans/prd.json`. In remote/`--issue` mode, list commits on the ralph branch since base.
-- Outcome value (if any) and the iter count from the loop's own banner.
+**Step 0 — Pick the worktree.**
 
-**Step 2 — Verify the resume is safe.** Re-check `git status --porcelain`. Should be clean (precondition 7b would have refused otherwise, but double-check before re-launching). If anything is off, surface it and stop.
+Enumerate via `git -C <cwd> worktree list --porcelain`. For each, read `<wt>/.ralph/outcome` and check `<wt>/.ralph/run.pid` liveness. Among recoverable ones:
+- If exactly one: that's `WORKTREE_PATH`.
+- If user passed `/ralph resume <slug>`: match by branch name; refuse on no match.
+- Otherwise: present picker (showing slug, outcome, last progress line). User chooses one.
 
-**Step 3 — Offer three paths.** Ask the user:
+Capture: `WORKTREE_PATH`, `RALPH_BRANCH`, `BASE_BRANCH` (read `<WORKTREE_PATH>/.ralph/base_branch`).
+
+**Step 1 — Show what happened** (for the chosen worktree):
+- Last entry in `<WORKTREE_PATH>/.ralph/progress.txt` (most recent iteration's note).
+- Last 30 lines of `<WORKTREE_PATH>/.ralph/run.log` if it exists.
+- Completed-task count: local mode → count `passes: true` in `<WORKTREE_PATH>/plans/prd.json`; remote / `--issue` → `git -C <WORKTREE_PATH> log <RALPH_BRANCH> ^<BASE_BRANCH> --oneline`.
+- Outcome value and the iter count from the loop's banner.
+
+**Step 2 — Verify safe to resume.** `git -C <WORKTREE_PATH> status --porcelain`. If non-empty: surface and stop. The user must clean up that specific worktree (`cd <WORKTREE_PATH>; git status; git stash` etc.) before resuming.
+
+**Step 3 — Offer three paths.** Ask:
 
 | Path | What it does |
 |---|---|
-| **Resume** | Re-launch `.ralph/ralph.sh` with the user's chosen mode/cap. Agent reads progress.txt + PRD/issue, picks the next `passes: false` item (or in `--issue` mode, the unfinished portion based on commits already made), continues. |
-| **Review** (Phase 6) | Treat what's already committed as "done enough." Enter Phase 6 to squash-merge the partial work into the base branch. Useful if the loop got far enough to ship something. |
-| **Restart** | `rm -rf .ralph/ plans/prd.json` and run a fresh `/ralph`. Discards partial work. The `ralph/<slug>` branch and its commits stay — you can review/cherry-pick later if you want to salvage anything. |
+| **Resume** | Re-launch `<WORKTREE_PATH>/.ralph/ralph.sh` with chosen mode/cap. Agent reads progress.txt + PRD/issue, picks the next unfinished task, continues. |
+| **Review** (Phase 6) | Treat what's committed as "done enough." Jump to Phase 6 with this worktree pre-selected. |
+| **Restart** | Discard partial work in this worktree. Asks whether to also remove the worktree directory and the `ralph/<slug>` branch. |
 
 For the **Resume** path:
-- Default cap suggestion: `--afk 5` if previous mode was `--afk` (most resumes only need a few more iterations); `--once` if previous was `--once`. Let user override.
-- Before re-launching, remove the stale `.ralph/run.pid` and `.ralph/outcome` if present so the bash loop's startup checks pass cleanly.
-- Re-launch via the same Phase 5 mechanism (`--once` foreground or `--afk N` via nohup+disown).
+- Default cap suggestion: `--afk 5` if previous mode was `--afk`; `--once` if previous was `--once`. Let user override.
+- Before re-launching: `rm -f <WORKTREE_PATH>/.ralph/run.pid <WORKTREE_PATH>/.ralph/outcome` so the bash loop's startup checks pass.
+- Re-launch via Phase 5 mechanism: `cd <WORKTREE_PATH> && nohup .ralph/ralph.sh --afk N > .ralph/run.log 2>&1 & disown` (or `--once` foreground).
 
-For the **Review** path: jump straight to Phase 6, treating the current branch state as the final result.
+For the **Review** path: jump to Phase 6 with `WORKTREE_PATH` already selected (skip Step 0).
 
-For the **Restart** path: confirm destructive action ("this will delete `.ralph/` and `plans/prd.json` — the branch stays. OK?"). On confirmation, clean and fall through to a fresh planning grill.
+For the **Restart** path:
+- Confirm: "Delete worktree `<WORKTREE_PATH>` and branch `<RALPH_BRANCH>`? Their commits will be unrecoverable except via reflog. OK?"
+- On yes:
+  ```bash
+  git -C <MAIN_REPO> worktree remove --force <WORKTREE_PATH>
+  git -C <MAIN_REPO> branch -D <RALPH_BRANCH>
+  ```
+  Then fall through to a fresh planning grill (Phase 1).
+- On no: confirm a softer restart — keep the worktree dir and branch, just clear `.ralph/` and `plans/prd.json` inside, fall through to a fresh planning grill. (Note: this is unusual; it leaves the worktree in a half-state. Surface this clearly.)
 
 ## Subcommand: `/ralph status` (alias `/ralph t`)
 
-Read-only telemetry. Never modifies state. Works whether the loop is running, finished, or interrupted.
+Read-only telemetry. Never modifies state. Works whether loops are running, finished, or interrupted.
 
-**Step 1 — Detect state:**
-- `.ralph/run.pid` exists + `kill -0 <pid>` succeeds → **running**
-- `.ralph/outcome=complete` → **finished, awaiting Phase 6**
-- `.ralph/outcome ∈ {cap, error, stopped}` → **interrupted, awaiting Phase R**
-- No `.ralph/` → tell user no Ralph state in this repo, exit
+**Step 1 — Enumerate ralphs in this repo.**
 
-**Step 2 — Gather:**
+Run `git -C <cwd> worktree list --porcelain`. For each worktree (including the main repo), check:
+- `<wt>/.ralph/run.pid` exists + PID alive → **RUNNING**
+- `<wt>/.ralph/outcome=complete` → **COMPLETE**
+- `<wt>/.ralph/outcome ∈ {cap, error, stopped}` → **CAP / ERROR / STOPPED**
+- Otherwise (no `.ralph/`): not a ralph worktree, skip.
+
+If zero ralph worktrees: tell user "No Ralph state in this repo." Exit.
+
+**Step 2 — Format depends on count.**
+
+### Single ralph (or `/ralph status <slug>` drilling in)
+
+Today's full detail format. For the matched worktree, gather:
 - PID + alive-status
-- Branch (`git rev-parse --abbrev-ref HEAD` if on ralph branch, else parse from log)
-- Cap and iter-progress: scan `.ralph/run.log` for the most recent `==================== iter N / M ====================` line
-- Last milestone banner: scan `.ralph/run.log` for the most recent `✓ MILESTONE` block (5 lines), or `⚠ BLOCKER` block, or the final `🏁 RALPH COMPLETE` / `⏱ CAP HIT` banner if present
-- Last progress note: tail of `.ralph/progress.txt` (most recent `## Iter N` block)
-- Last 15 lines of `.ralph/run.log` for raw context
+- Branch and worktree path
+- Cap and iter-progress: scan `<wt>/.ralph/run.log` for the most recent `==================== iter N / M ====================` line
+- Last milestone banner: scan `<wt>/.ralph/run.log` for the most recent `✓ MILESTONE` block (5 lines), or `⚠ BLOCKER`, or the final `🏁 RALPH COMPLETE` / `⏱ CAP HIT` banner if present
+- Last progress note: tail of `<wt>/.ralph/progress.txt` (most recent `## Iter N` block)
+- Last 15 lines of `<wt>/.ralph/run.log` for raw context
 
-**Step 3 — Format output** like this:
-
+Output:
 ```
 Ralph telemetry — <ralph-branch>
 ─────────────────────────────────────────────────────
-  Status:   <RUNNING / COMPLETE / CAP / ERROR / STOPPED>
-  PID:      <pid> (alive | dead)
-  Iter:     <N> / <M>
-  Mode:     <--once | --afk M>
+  Status:    <RUNNING / COMPLETE / CAP / ERROR / STOPPED>
+  PID:       <pid> (alive | dead)
+  Iter:      <N> / <M>
+  Mode:      <--once | --afk M>
+  Worktree:  <WORKTREE_PATH>
 
 Last milestone:
   <copy the milestone banner block verbatim>
@@ -310,21 +440,52 @@ Recent log (last 15 lines):
   <tail of run.log>
 
 ────
-Stop: /ralph stop  ·  Resume on next interaction: /ralph
+Stop: /ralph stop  ·  Resume / review on next interaction: /ralph
 ```
 
-**Step 4 — Light suggestions** based on state:
-- **Running**: "Loop is healthy. Check back when notification fires, or run `/ralph status` again."
-- **Complete**: "Loop done. Run `/ralph` (no args) to enter Phase 6."
-- **Interrupted**: "Loop ended in `<outcome>`. Run `/ralph` (no args) to see Phase R recovery options."
+Light suggestions based on state:
+- **RUNNING**: "Loop is healthy. Check back when notification fires."
+- **COMPLETE**: "Loop done. `/ralph done` to enter Phase 6."
+- **CAP / ERROR / STOPPED**: "Loop ended in `<outcome>`. `/ralph resume` to see Phase R options."
 
-Keep the whole output under ~40 lines. The user wants a glanceable check-in, not a full debug dump.
+Keep under ~40 lines.
+
+### Multiple ralphs (compact summary)
+
+```
+Ralph status — <repo-name> repo (<N> loops)
+─────────────────────────────────────────────────────
+  RUNNING   <ralph-branch-1>   iter <N>/<M>   pid <pid>
+  RUNNING   <ralph-branch-2>   iter <N>/<M>   pid <pid>
+  COMPLETE  <ralph-branch-3>   awaiting /ralph done
+  CAP       <ralph-branch-4>   ended at iter <N>/<M>
+
+Drill in: /ralph status <slug>
+Stop:     /ralph stop  (picker)  ·  /ralph stop --all
+Done:     /ralph done  (picker on completed)
+```
+
+Keep one row per loop, ≤80 chars wide. Don't print log tails or progress notes — that's drill-in territory.
 
 ## Subcommand: `/ralph stop`
 
-1. Read `.ralph/run.pid`. If missing or PID dead, tell user no loop is running.
-2. `kill -TERM <PID>`. The script's trap catches SIGTERM, finishes the current iteration cleanly, removes the lockfile, fires the completion notification with outcome `stopped`, exits.
-3. Wait up to 60s for graceful exit; if still alive, escalate to `kill -KILL <PID>` and warn user about possible dirty working tree.
+**Step 1 — Enumerate running ralphs** (worktrees with live `.ralph/run.pid`).
+
+- Zero running: tell user "No ralph running in this repo." Exit.
+- One running: stop it (Step 3).
+- Multiple running:
+  - If cwd is itself one of the running ralph worktrees: stop that one (cwd-implicit). Tell user explicitly which one you're stopping.
+  - Else if user passed `--all`: stop every running loop (Step 3 for each).
+  - Else if user passed `/ralph stop <slug>`: match by branch name and stop that one.
+  - Else: present picker via AskUserQuestion.
+
+**Step 2 — `/ralph stop <slug>`** matches by trailing branch slug or worktree slug. Refuse on no match with a list of running slugs.
+
+**Step 3 — Stop a single loop:**
+1. `kill -TERM <PID>`. The script's trap catches SIGTERM, finishes the current iteration cleanly, removes the lockfile, fires notification with `outcome=stopped`, exits.
+2. Wait up to 60s for graceful exit; if still alive, `kill -KILL <PID>` and warn user about possibly-dirty worktree (which they'd see in Phase R).
+
+For `--all`: send SIGTERM to all in parallel; wait up to 60s for all; SIGKILL stragglers.
 
 ## Templates in this skill
 
@@ -490,13 +651,20 @@ The bash script handles this — calls `osascript -e 'display notification ...'`
 
 ## Cleanup philosophy
 
-`.ralph/` is ephemeral runtime state. The repo's `.gitignore` keeps it out of commits. `plans/prd.json` is committed per iteration in local mode (so iteration-to-iteration diffs work) and deleted at completion. The `ralph/<slug>` branch is the durable record — review it, squash-merge or rebase, ship.
+The **worktree** is the per-run sandbox. `.ralph/` lives inside it (gitignored). The `ralph/<slug>` branch is the durable record. Phase 6 squash-merges into base and (with user approval) removes the worktree + branch atomically.
 
-After a successful run, **enter Phase 6** — do NOT print manual git instructions to the user. Phase 6 walks them through the squash-merge, branch cleanup, and PR flow interactively.
+After a successful run, **enter Phase 6** — do NOT print manual git instructions to the user. Phase 6 walks them through the squash-merge, combined worktree+branch cleanup, and PR flow interactively.
+
+`.ralph/base_branch` (single line, written at scaffold time) is the only piece of cross-session metadata Phase 6 needs that isn't recoverable from git itself.
 
 ## Failure modes to watch for
 
-- Loop crashes mid-iteration with dirty working tree → next iteration must `git stash` or refuse cleanly. The bash template handles this.
+- Loop crashes mid-iteration with dirty working tree (in the worktree) → next iteration must refuse cleanly. The bash template handles this.
 - Issue tracker auth expires mid-AFK run (remote mode) → loop logs error, exits, notification fires with `outcome=error`.
 - Feedback loop times out or never finishes → not handled by v1; user kills the loop manually.
-- User opens the same repo in another Claude Code session and starts editing → not handled; the lockfile only prevents concurrent ralph loops, not concurrent humans.
+- User opens the worktree in another Claude Code session and starts editing → not handled; the per-worktree lockfile only prevents concurrent ralph loops in the *same* worktree, not concurrent humans there.
+- `git worktree add` fails because path exists or branch exists → handled by precondition 9 + Phase 3 step 3 collision check; refuse with the exact path/branch.
+- `git worktree remove` fails because of untracked files (e.g. `.ralph/run.log`) → Phase 6 retries with `--force`. Restart path in Phase R also uses `--force`.
+- Base branch isn't checked out anywhere when Phase 6 runs → `BASE_WT = MAIN_REPO`; Phase 6 checks out `<BASE_BRANCH>` there before merging, but only if main repo's working tree is clean. Otherwise refuses.
+- User runs `/ralph` from inside an active ralph worktree → precondition 4 refuses; tell them to `cd` to main repo or a non-ralph worktree.
+- `.ralph/base_branch` missing (e.g. user manually deleted it, or worktree was scaffolded by an old version of this skill) → Phase 6 falls back to asking the user which branch to merge into.

@@ -4,26 +4,28 @@ Pocock's "Ralph Wiggum" autonomous AI coding loop, adapted to this machine, the 
 
 ## TL;DR
 
-`/ralph` grills you for a goal, generates a PRD (local JSON or GitHub issues), branches off HEAD into `ralph/<slug>`, launches a capped bash loop that calls `claude -p` per iteration until the backlog drains or the cap is hit. Loop runs out-of-process — survives the parent Claude Code session ending.
+`/ralph` grills you for a goal, generates a PRD (local JSON or GitHub issues), creates a sibling **git worktree** off cwd's HEAD, branches it as `ralph/<slug>`, and launches a capped bash loop in that worktree that calls `claude -p` per iteration until the backlog drains or the cap is hit. Loop runs out-of-process — survives the parent Claude Code session ending.
+
+**Multiple ralphs can run concurrently on the same codebase** — each in its own sibling worktree. Discovery is per-repo via `git worktree list`; no global registry.
 
 ## Invocation
 
 | Form | Behavior |
 |---|---|
-| `/ralph <goal>` | Plan + run, **local mode**. PRD in `plans/prd.json`, deleted on completion. |
-| `/ralph --remote <goal>` | Plan + run, **remote-greenfield mode**. PRD via `to-prd` → `to-issues` → auto-promoted to `ready-for-agent`. |
-| `/ralph --issue <ref>` | Plan + run, **existing-issue mode**. Uses GitHub issue body as the PRD; loop scoped to that one issue. `<ref>` accepts `#138`, `138`, or `org/repo#138`. |
-| `/ralph done` | Phase 6 — interactive post-completion review (squash-merge, branch cleanup, optional PR, optional issue close). Auto-triggered when `/ralph` (no args) is run in a repo with a finished loop. |
-| `/ralph resume` | Phase R — re-launch an interrupted loop, picking up at the next unfinished task. Auto-offered when `/ralph` (no args) is run in a repo with partial state. |
-| `/ralph status` (alias `/ralph t`) | Read-only telemetry: status, current iter, last milestone banner, last progress note, recent log lines. Doesn't interrupt the loop. |
-| `/ralph stop` | SIGTERM running loop in cwd via `.ralph/run.pid`. |
+| `/ralph <goal>` | Plan + run, **local mode**. New sibling worktree. PRD in `plans/prd.json`. |
+| `/ralph --remote <goal>` | Plan + run, **remote-greenfield mode**. PRD via `to-prd` → `to-issues`. New worktree. |
+| `/ralph --issue <ref>` | Plan + run, **existing-issue mode**. Uses GitHub issue body as PRD. New worktree. `<ref>` accepts `#138`, `138`, `org/repo#138`. |
+| `/ralph done` (`<slug>`?) | Phase 6 — interactive squash-merge into base + worktree+branch cleanup + optional PR/issue-close. Picker if >1 completed; auto-pick if 1. |
+| `/ralph resume` (`<slug>`?) | Phase R — re-launch an interrupted loop. Picker if >1 recoverable. |
+| `/ralph status` (alias `/ralph t`, `<slug>`?) | Read-only telemetry. No args: compact summary table across all ralph worktrees in the repo. With slug: drill in. |
+| `/ralph stop` (`<slug>`? or `--all`) | SIGTERM. Cwd-implicit if cwd is a ralph worktree. Picker if >1 running. |
 
 ## File layout
 
 ```
 ~/projects/personal-nix/skills/ralph/        ← source (this dir)
 ├── README.md                                 this file (human orientation)
-├── SKILL.md                                  orchestrator instructions (~270 lines)
+├── SKILL.md                                  orchestrator instructions
 ├── ralph.sh.tmpl                             bash loop template
 ├── prompt.md.tmpl                            per-iteration prompt template
 └── AGENT-BRIEF.tmpl                          remote-mode comment template
@@ -31,61 +33,88 @@ Pocock's "Ralph Wiggum" autonomous AI coding loop, adapted to this machine, the 
 ~/.claude/skills/ralph                       ← symlink (created by `dev`)
 ```
 
-Per-run, scaffolded into the target repo:
+Per-run, scaffolded into a **sibling worktree** of the main repo:
 
 ```
-<repo>/.ralph/                                ← runtime state, all gitignored
-├── ralph.sh                                  rendered loop
-├── prompt.md                                 rendered per-iteration prompt
-├── progress.txt                              append-only epistemic log
-├── run.pid                                   lockfile
-└── run.log                                   AFK stdout/stderr
+~/Projects/
+├── platform/                                 ← main repo
+└── platform-ralph-issue-138/                 ← sibling worktree (one per concurrent ralph)
+    ├── .git                                  pointer file → main repo's .git/
+    ├── .gitignore                            (modified to ignore .ralph/)
+    ├── .ralph/                               runtime state, all gitignored
+    │   ├── ralph.sh                          rendered loop ({{REPO_PATH}} = this worktree)
+    │   ├── prompt.md                         rendered per-iteration prompt
+    │   ├── progress.txt                      append-only epistemic log
+    │   ├── base_branch                       single line: branch we'll merge back into
+    │   ├── outcome                           complete | cap | error | stopped (written on exit)
+    │   ├── run.pid                           lockfile (per-worktree, not per-repo)
+    │   └── run.log                           AFK stdout/stderr
+    ├── plans/prd.json                        ← local mode only
+    └── ...                                   the codebase, on branch ralph/issue-138-...
+```
 
-<repo>/plans/prd.json                         ← local mode only; committed per iter, deleted at completion
+Multiple concurrent ralphs in the same repo:
+
+```
+~/Projects/
+├── platform/                                 ← main repo
+├── platform-ralph-issue-138-fix-vital-age/   ← worktree 1 (running)
+├── platform-ralph-issue-140-add-cohort/      ← worktree 2 (running)
+└── platform-ralph-issue-142-cleanup/         ← worktree 3 (complete, awaiting Phase 6)
 ```
 
 ## Locked-in design decisions
 
 Reasoning so future-you doesn't relitigate.
 
-- **Three modes, flagged at invocation.** Local (default) for prototype work, `--remote` for greenfield backlogs (creates the PRD on the tracker), `--issue <ref>` for existing GitHub issues (uses the issue body as PRD, loop scoped to one issue). Same loop logic; only the task-source query and completion check differ.
-- **Phase 6 auto-runs at sentinel.** Bash loop writes `.ralph/outcome=complete` on success. `--once` mode immediately enters Phase 6 (squash-merge → branch cleanup → optional PR → optional issue close → state cleanup, asking at each step). For `--afk` mode, the next `/ralph` invocation detects `outcome=complete` and routes to Phase 6 instead of starting a new run. Eliminates the "now run these 5 git commands manually" friction.
-- **Phase R recovers interrupted runs.** State is fully resumable: `progress.txt` records what's been done, `prd.json` flags `passes: true` per task, the rendered ralph.sh and prompt.md persist. After an interruption (kill, /ralph stop, cap-hit), running `/ralph` again detects partial state and offers Resume / Review / Restart. Resume picks up at the next unfinished task. Hard refusal only on a dirty working tree (which signals a mid-iteration crash).
-- **Milestone banners stream during the run.** Per-iteration `✓ MILESTONE` banner from the agent (with a one-line "what's now true that wasn't"), plus a big `🏁 RALPH COMPLETE` or `⏱ CAP HIT` banner from the bash loop on exit. Both go through `tee` to `.ralph/run.log`, so they're visible whether you're tailing the log or reading via the orchestrator.
-- **`/ralph status` (alias `/ralph t`) is read-only telemetry.** Anytime check-in: PID liveness, current iter, last milestone banner, last progress note, log tail. Doesn't interrupt the loop. Works mid-run, post-completion, or post-interruption — adapts output to current state.
-- **Test-must-exist enforcement, not full TDD.** Per-iteration prompt requires: if you added new behavior, a test must exist that exercises it. Doesn't enforce test-first ordering (TDD overhead isn't worth it for refactors/config/docs). Hits Pocock's "agents skip testing" failure mode without prescribing TDD across the board.
-- **Human-approved issue close in Phase 6 doesn't violate the agents-don't-close-issues convention.** That convention applies to the autonomous AFK loop. Phase 6 is interactive — every step requires your approval — so closing there is just executing your intent.
-- **Always branch to `ralph/<slug>`.** Branches off whatever HEAD is. Never commits to `main`/`master`/etc. Loop also defense-in-depth checks.
-- **No Docker sandbox in v1.** Tool-allowlist via `claude -p --allowed-tools` with constrained `Bash(<bin> *)` globs. Blocks realistic accidents. Layer Docker only if multi-hour overnight loops become routine.
+- **Always-on git worktrees.** Every `/ralph` run creates a sibling worktree (`<main-parent>/<repo>-ralph-<slug>/`) and works inside it. No in-place mode. Lets multiple ralphs run on the same codebase concurrently; lets the main repo stay dirty while a ralph runs (only HEAD is needed for `git worktree add`). One code path.
+- **Per-repo discovery via `git worktree list`.** No global registry across repos. `/ralph status`/`stop`/`done`/`resume` enumerate worktrees of the current repo and find ones with `.ralph/` state. Cross-repo "lost ralph" → use `pgrep -f ralph.sh`.
+- **Branch off cwd-worktree's HEAD.** New ralph branches off whichever branch the cwd worktree currently has checked out. Lets you ralph-off-a-feature-branch by `cd`ing into that worktree. Phase 6 captures this as `BASE_BRANCH` in `.ralph/base_branch` and merges back into it.
+- **Worktree+branch cleanup is one combined prompt in Phase 6.** Squash-merge succeeds → ask "delete worktree `<path>` and branch `<ralph-branch>`?" — yes runs both ops; no leaves both for manual cleanup. They're coupled (worktree without its branch is incoherent).
+- **Phase 6 merge runs in the base-worktree.** `git -C <base-wt>` does the merge regardless of orchestrator cwd. Refuses if base-worktree dirty. Auto-stash deemed too risky.
+- **Refuse `/ralph` from inside an active ralph worktree.** Branching off a mid-ralph state would inherit half-finished commits. User cd's to main repo or a non-ralph worktree first.
+- **No batch fanout in v1.** Three sequential `/ralph --issue N` invocations cover the parallelism use case; batch design (shared grill, fan-in status) deferred until pain points emerge.
+- **Three modes, flagged at invocation.** Local (default) for prototype work, `--remote` for greenfield backlogs, `--issue <ref>` for existing GitHub issues. Same loop logic; only the task-source query and completion check differ.
+- **Phase 6 auto-runs at sentinel.** Bash loop writes `.ralph/outcome=complete` on success. `--once` mode immediately enters Phase 6. For `--afk`, the next `/ralph` invocation detects completed worktrees and routes to Phase 6.
+- **Phase R recovers interrupted runs.** State is fully resumable per worktree. After an interruption, `/ralph` (or `/ralph resume`) detects recoverable worktrees and offers Resume / Review / Restart per worktree. Restart can fully remove the worktree.
+- **Milestone banners stream during the run.** Per-iteration `✓ MILESTONE` banner with a one-line "what's now true that wasn't", plus `🏁 RALPH COMPLETE` / `⏱ CAP HIT` banner on exit.
+- **`/ralph status` (alias `/ralph t`) — compact summary by default, drill-in by slug.** Multi-loop summary is one row per worktree. `/ralph status <slug>` shows the full ~40-line detail for one loop.
+- **Test-must-exist enforcement, not full TDD.** Per-iteration prompt requires: if you added new behavior, a test must exist that exercises it.
+- **Human-approved issue close in Phase 6 is fine.** That step is interactive; the agents-don't-close-issues convention only constrains the autonomous AFK loop.
+- **No Docker sandbox in v1.** Tool-allowlist via `claude -p --allowed-tools` with constrained `Bash(<bin> *)` globs.
 - **No `--dangerously-skip-permissions`.** Pocock's article uses it; we don't.
 - **Sentinel = `<promise>COMPLETE</promise>`.** Pocock-exact, XML-tagged.
-- **Per-iteration commit, never push.** Human reviews + squash-merges manually.
-- **`.ralph/` and `progress.txt` gitignored.** Code commits = durable trail. PRD committed per iter only in local mode (gives iteration-to-iteration diffs).
+- **Per-iteration commit, never push.** Phase 6 is the merge gate.
+- **`.ralph/` gitignored, lives inside the worktree.** Per-worktree state. Removed when the worktree is removed.
 - **Iteration cap heuristic.** 1–3 PRD items → 5, 4–9 → 15, 10+ → 30. Hard ceiling 50.
-- **Notification = `osascript` banner + `\a` bell.** No external services.
-- **Ralph-specific grill, not the generic `grill-me`.** Targets fields Ralph needs (files in/out of scope, stop condition, quality bar) — Pocock's tip #3, vague intake → Ralph cuts corners.
+- **Notification = `osascript` banner + `\a` bell.** No external services. Notification body includes worktree branch, so multiple concurrent ralphs are distinguishable.
+- **Ralph-specific grill, not generic `grill-me`.** Targets fields Ralph needs (files in/out of scope, stop condition, quality bar).
 
 ## Phases of one `/ralph`
 
-1. **Preconditions** — git repo, clean tree, `claude` on PATH, no stale `.ralph/` state, `gh` auth (remote mode only).
-2. **Grill** — goal, quality bar, files in/out of scope, stop condition, mode (`--once`/`--afk`), cap.
-3. **Auto-detect feedback loops** — from `package.json`/`Makefile`/`justfile`/`AGENTS.md`. Confirm with user.
-4. **PRD synthesis** — local: write `plans/prd.json`. Remote: `to-prd` → `to-issues` → auto-render agent brief → label `ready-for-agent`.
-5. **Branch + scaffold** — `git checkout -b ralph/<slug>`; render `.ralph/ralph.sh` and `.ralph/prompt.md`.
-6. **Prompt review** — show full rendered prompt; require explicit approval.
-7. **Launch** — `--once` foreground or `--afk N` via `nohup ... & disown`.
+1. **Preconditions** — git repo, ≥1 commit, `claude` on PATH, `git worktree` available, cwd not an active ralph worktree, no name collisions for the new worktree/branch, `gh` auth (remote mode).
+2. **Grill** — goal, quality bar, files in/out of scope, stop condition, mode, cap.
+3. **Auto-detect feedback loops** — from `package.json`/`Makefile`/`justfile`/`AGENTS.md`. Confirm.
+4. **PRD synthesis** — local: write `<wt>/plans/prd.json`. Remote: `to-prd` → `to-issues` → agent brief → label.
+5. **Worktree + scaffold** — `git -C <main-repo> worktree add <wt> -b ralph/<slug> <base-branch>`; render `<wt>/.ralph/ralph.sh`, `<wt>/.ralph/prompt.md`, `<wt>/.ralph/base_branch`. Commit scaffolding inside the worktree. Print worktree path.
+6. **Prompt review** — show full rendered prompt; require approval.
+7. **Launch** — `cd <wt> && .ralph/ralph.sh --once` (foreground) or `cd <wt> && nohup .ralph/ralph.sh --afk N > .ralph/run.log 2>&1 & disown`.
 
 ## Common breakages
 
-- **"already running" refusal** — stale lockfile. `cat .ralph/run.pid; kill <pid>; rm .ralph/run.pid`.
-- **Allowlist too narrow → iter 1 fails** — orchestrator missed a `Bash(<bin> *)` glob. Edit `.ralph/ralph.sh` to add it, re-run.
-- **Allowlist too wide (e.g. unqualified `Bash`)** — orchestrator ignored SKILL.md's anti-pattern guidance. Re-run, or hand-edit `.ralph/ralph.sh`.
-- **`gh pr create` fails after run** — repo has no remote. Expected for scratch dirs; merge locally or add a remote.
-- **Squash-merge → `git branch -d` refuses** — use `-D`. Squash isn't fast-forward, git sees branch as unmerged.
-- **Auth expires mid-AFK** — iterations error out, loop exits, notification fires `outcome=error`. Re-auth, re-run.
-- **Working tree dirty at iteration start** — bash loop bails. Manual cleanup (`git status; git stash`/commit), then re-run.
-- **Long-lived Claude Code session uses stale SKILL.md** — Claude Code reads SKILL.md at skill-invocation time. If you edit SKILL.md while a session is open, then invoke `/ralph` in that session, the orchestrator may use cached/stale instructions (e.g. printing manual git commands instead of entering Phase 6). Fix: open a fresh Claude session in the repo. The bash loop and rendered `.ralph/prompt.md` are not affected — they're written to disk at scaffold time and run from there.
-- **Old loops have no milestone banners** — runs scaffolded before the milestone-banner addition won't have `✓ MILESTONE` blocks in `run.log`. `/ralph status` adapts (shows iteration banners and progress notes instead). Cosmetic only.
+- **"already running" refusal in a worktree** — stale lockfile in that specific worktree. `cat <wt>/.ralph/run.pid; kill <pid>; rm <wt>/.ralph/run.pid`.
+- **Worktree path collision** — Phase 3 refuses if `<wt-path>` already exists. Run `git -C <main-repo> worktree remove <wt-path>` (or `--force` if files linger), then re-run `/ralph`.
+- **Branch collision** — Phase 3 refuses if `ralph/<slug>` exists. `git -C <main-repo> branch -D ralph/<slug>` or finish/abandon the existing run.
+- **`git worktree remove` fails on cleanup** — untracked files in the worktree (`.ralph/run.log`, etc.). Phase 6 retries with `--force`.
+- **Phase 6 refuses: base-worktree dirty** — the worktree currently holding `<base-branch>` (usually main repo) has uncommitted edits. Commit/stash/discard there, then re-run `/ralph done`.
+- **Allowlist too narrow / too wide** — orchestrator missed (or oversaturated) a `Bash(<bin> *)` glob. Edit `<wt>/.ralph/ralph.sh`, re-run.
+- **`gh pr create` fails after run** — repo has no remote. Merge locally or add a remote.
+- **Squash-merge → `git branch -d` refuses** — Phase 6 uses `-D`. Squash isn't fast-forward.
+- **Auth expires mid-AFK** — iteration errors out, loop exits, notification fires `outcome=error`. Phase R routes to recovery.
+- **Working tree dirty inside a worktree at iteration start** — bash loop bails. Manual cleanup inside that worktree, then `/ralph resume <slug>`.
+- **Refuses to start because cwd is an active ralph worktree** — cd to main repo or a non-ralph worktree first.
+- **Long-lived Claude Code session uses stale SKILL.md** — open a fresh Claude session in the repo. Bash loop and rendered prompt are unaffected (already on disk).
+- **`.ralph/base_branch` missing** — Phase 6 falls back to asking which branch to merge into. Happens for worktrees scaffolded by an old version of this skill.
 
 ## Hacking on ralph itself
 
@@ -93,10 +122,11 @@ Symlink points at live working tree — edits to `~/projects/personal-nix/skills
 
 ## Open issues / known gaps
 
-- **No token/cost cap.** Iteration count is the only budget knob. AFK runs on huge PRDs can spend a lot.
-- **No resume from crash.** If the loop dies mid-iteration with a dirty tree, you fix manually before re-running.
-- **No concurrent-human protection.** Lockfile only prevents two `ralph` loops in the same repo, not a human editing files while ralph runs.
-- **Feedback-loop timeout unset.** A pathological test command can hang the iteration; user kills the loop manually.
+- **No token/cost cap.** Iteration count is the only budget knob.
+- **No batch fanout.** Spinning up 3 ralphs requires 3 sequential `/ralph --issue N` invocations.
+- **No concurrent-human protection inside a worktree.** The per-worktree lockfile only prevents two ralph loops in the same worktree, not a human editing files there while ralph runs.
+- **Feedback-loop timeout unset.** A pathological test command can hang an iteration; user kills the loop manually.
+- **No cross-repo discovery.** `/ralph status` only sees worktrees of the current repo; cross-repo escape hatch is `pgrep -f ralph.sh`.
 
 ## References
 
