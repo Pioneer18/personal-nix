@@ -91,7 +91,7 @@ Run a Tachikoma-specific grill — do **not** invoke the generic `grill-me` skil
 
 > I'll ask ~7 questions to scope this run (goal, quality bar, files in/out of scope, stop condition, mode, cap). Takes ~2 minutes. Type 'cancel' at any point to abort — nothing is created until you approve the plan.
 
-**Cancel path.** If at any point during the grill — including the final "Approved?" prompt — the user replies with `cancel`, `stop`, `exit`, or `nevermind` (or any clear abort intent), respond with exactly *"Cancelled. Nothing was created."* and exit cleanly. Do not write any files, do not create the worktree, do not invoke `to-prd`/`to-issues`. The cancel is honored up until Phase 3 begins; once the worktree exists, the user must use `/tachikoma stop` instead.
+**Cancel path.** If at any point during the grill — including the final "Launch?" prompt — the user replies with `cancel`, `stop`, `exit`, or `nevermind` (or any clear abort intent), respond with exactly *"Cancelled. Nothing was created."* and exit cleanly. Do not write any files, do not create the worktree, do not invoke `to-prd`/`to-issues`. The cancel is honored up until Phase 3 begins; once the worktree exists, the user must use `/tachikoma stop` instead.
 
 In **`--issue <ref>` mode** (fast-path flag, or grill question 3 returned an issue ref): fetch the issue first (`gh issue view <num> --json title,body,labels,comments,assignees`). The issue body is the source of truth for **goal** and **stop condition** — extract them directly. Also scan the issue body (case-insensitive, whole-word) for the quality bar keywords `prototype`, `production`, and `library` — if exactly one matches, pre-fill it and skip question 2 (if multiple distinct keywords appear, the extraction is ambiguous; ask normally). Only grill the user for fields the issue body doesn't cover (typically: files in/out of scope, mode/cap, feedback loops, and quality bar when extraction failed). Confirm the extracted goal/stop-condition with the user before proceeding.
 
@@ -127,17 +127,34 @@ In **`--issue <ref>` mode** (fast-path flag, or grill question 3 returned an iss
 
    Show the user the detected commands and ask: "These look right? Anything to add/remove?" If nothing detected, ask explicitly. At least one feedback loop must be defined; refuse to launch without any.
 
-### Grill output
+### Plan summary + launch confirmation
 
-After the grill, summarize all fields in a numbered list — including:
+After the grill, present a single combined view that the user approves once. This is the only approval gate before Phase 2/3 — the legacy Phase 4 prompt-review step has been merged in here so the user reads (and edits) the plan and the prompt's key sections together, then launches with one confirmation.
+
+**Section A — Field summary** (numbered list, all the fields collected above) plus:
 - **Iteration mode** (rendered as the raw flag form: `--once` or `--afk N`, so the user can see what Phase 5 will execute even though they answered in plain language)
 - **Base branch** (cwd-worktree's current HEAD, where `tachikoma/<slug>` will be rooted and where Phase 6 will merge back)
 - **Tachikoma branch** (the computed `tachikoma/<slug>` name)
 - **Worktree path** (the sibling dir that will be created via `git worktree add`)
 
-Any field auto-extracted from the issue body (e.g., quality bar in `--issue` mode) must be tagged `(extracted from issue body)` in the summary so the user knows it wasn't asked, and can override it before approving.
+Any field auto-extracted from the issue body (e.g., quality bar in `--issue` mode) must be tagged `(extracted from issue body)` in the summary so the user knows it wasn't asked, and can override it.
 
-Ask "Approved?" before proceeding to Phase 2/3.
+**Section B — Rendered prompt preview.** Show the key sections of what `prompt.md` will contain when Phase 3 renders it from [prompt.md.tmpl](prompt.md.tmpl), with placeholders substituted from the grill answers:
+- **Goal** (`{{GOAL}}`)
+- **Quality bar** — the full `{{QUALITY_BAR_PARAGRAPH}}` for the chosen tier (the loop reads this paragraph as guardrail text; the user should see the exact wording the agent will be primed with, not just the tier label).
+- **Files in scope** (`{{FILES_IN_SCOPE}}`)
+- **Files out of scope** (`{{FILES_OUT_OF_SCOPE}}`)
+- **Stop condition** (`{{STOP_CONDITION}}`)
+- **Feedback-loop commands** (`{{TYPECHECK_CMD}}`, `{{TEST_CMD}}`, `{{LINT_CMD}}`)
+- **Task source** (`{{TASK_SOURCE_BLOCK}}`) — for `--issue` mode the issue ref + acceptance criteria, for local the PRD shape, for remote-greenfield the parent PRD issue.
+
+Show enough that the user can spot wrong commands, fuzzy stop conditions, or scope mistakes without a separate review step. Don't dump the entire template — the agent reads the full file at iteration time. Boilerplate template scaffolding (`{{COMMIT_INSTRUCTIONS}}`, `{{COMPLETION_INSTRUCTIONS}}`) is omitted from the preview.
+
+**Section C — Launch confirmation.** Ask exactly one question, phrased per iteration mode:
+- AFK mode: *"Launch the AFK loop (cap N)?"*
+- Once mode: *"Launch foreground loop?"*
+
+If the user requests edits to any field (a scope glob, the stop condition, a feedback-loop command, etc.), edit the grill data in-conversation, re-show Sections A + B, and re-ask Section C. There is no second approval after this — once the user says yes, Phase 3 renders `prompt.md` to disk using the approved fields and Phase 5 launches immediately.
 
 ## Phase 2: PRD synthesis (mode-forked)
 
@@ -255,9 +272,7 @@ The `agent-running` label is the distributed claim signal. A concurrent Tachikom
    Tail:     tail -f <WORKTREE_PATH>/.tachikoma/run.log
    ```
 
-## Phase 4: prompt review (mandatory)
-
-Show the user the rendered `<WORKTREE_PATH>/.tachikoma/prompt.md` in full. Ask "Launch?" — only proceed on explicit approval. If user requests edits, edit the file in the worktree and re-show.
+> Phase 4 (the standalone prompt review) was merged into Phase 1's combined plan-summary-and-launch confirmation. Phase 5's number is preserved so cross-references in this skill, in run logs, and in user muscle memory stay valid; there is no separate gate between Phase 3 and Phase 5.
 
 ## Phase 5: launch
 
@@ -662,7 +677,7 @@ For well-structured bodies, show the extracted fields and confirm in one pass.
 
 **d. Update the queue file:** `status: open` → `status: grabbed`, bump `last_updated` to today. This is the commit point — anything after this that exits unexpectedly leaves the item grabbed and triggers Step 0 recovery on the next run.
 
-**e. `cd` to `target_repo`.** Run Phases 3–4 (worktree creation + prompt review) using the extracted fields. The target_repo's current HEAD is the base branch.
+**e. `cd` to `target_repo`.** Run Phase 3 (worktree creation + scaffolding) using the extracted fields. The target_repo's current HEAD is the base branch. Queue mode's per-item "Launch this item?" at step (c) is the single approval gate — Phase 4 was merged into Phase 1 for the bare `/tachikoma` flow, and queue mode's step (c) plays the same role here, so there's no second prompt-review step before launch.
 
 **f. Phase 5 — launch `--once` (foreground).** Stream the iteration output directly. Queue drain is the session driver; `--once` keeps items sequential and output readable.
 
