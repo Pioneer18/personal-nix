@@ -16,6 +16,7 @@ Pioneer18's machine wiki. Knowledge that outlives any single Claude session, que
 - `runbooks/` — "when X breaks, do Y"
 - `inbox/` — uncategorized captures (triage later)
 - `notes/` — random saves, tag-categorized
+- `work-requests/` — work captured for ralph to pick up later (alternative to GitHub issues)
 
 ## Invocation
 
@@ -57,6 +58,7 @@ If `<subdir>` is not in the fixed vocabulary above, refuse and list valid subdir
    - **`tools/`**: also `summary` (required, one line), `category` (required), `link` (optional)
    - **`glossary/`**: also `term` (required, often same as title)
    - **`decisions/`**: also `status` (one of `proposed`/`accepted`/`superseded`, default `accepted`)
+   - **`work-requests/`**: also `target_repo` (required, absolute path or `~`-prefixed — must exist on this machine), `status` (one of `open`/`grabbed`/`done`, default `open`)
    - **`recipes/` / `runbooks/` / `notes/` / `inbox/`**: just title, tags, body
 
 3. **Compute slug** from title: lowercase, alphanumeric + dashes, max 40 chars. Filename = `wiki/<subdir>/<slug>.md`.
@@ -97,6 +99,19 @@ When a `decisions/` entry is replaced by a newer one, the user may ask to mark i
 ### Glossary collisions
 
 If a `glossary/` entry already exists for the term, prefer **editing** the existing entry over creating a duplicate. Glossary terms should have exactly one entry.
+
+### Work requests and ralph
+
+`work-requests/` entries are durable seeds for ralph runs — an alternative to filing a GitHub issue. Lifecycle:
+
+- New entries default to `status: open`.
+- Every entry must have a `target_repo` — the absolute path of the codebase ralph should worktree from. Validate it exists at write time; refuse if not.
+- When the user points ralph at an entry, update its `status` to `grabbed` (and bump `last_updated`).
+- When the work lands (PR merged or task abandoned), update to `status: done`.
+
+When the user asks "what work do I have queued?" or similar, list `work-requests/` entries with `status: open` first. Ralph will typically interview/expand the entry into a PRD before looping — the entry is the seed, not the spec.
+
+Same privacy guardrails as the rest of the wiki: public repo, so no RelyMD work.
 
 ### Tool entries that already have a canonical doc
 
