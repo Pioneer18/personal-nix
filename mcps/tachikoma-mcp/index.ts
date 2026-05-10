@@ -130,7 +130,7 @@ function readTachikomaState(wtPath: string): Pick<TachikomaState, "status" | "pi
 function tachikomaStatus(): TachikomaState[] {
   if (!existsSync(PROJECTS_DIR)) return [];
 
-  return readdirSync(PROJECTS_DIR, { withFileTypes: true })
+  const all = readdirSync(PROJECTS_DIR, { withFileTypes: true })
     .filter(e => e.isDirectory())
     .flatMap(entry => {
       const repoPath = join(PROJECTS_DIR, entry.name);
@@ -150,6 +150,15 @@ function tachikomaStatus(): TachikomaState[] {
           ...readTachikomaState(wt.path),
         }));
     });
+
+  // Sibling worktrees share .git metadata, so iterating each PROJECTS_DIR
+  // entry yields the same `worktree list --porcelain` output. Dedupe by
+  // absolute worktree path; first observer wins.
+  const seen = new Map<string, TachikomaState>();
+  for (const state of all) {
+    if (!seen.has(state.worktree)) seen.set(state.worktree, state);
+  }
+  return [...seen.values()];
 }
 
 // ── tachikoma_dispatch ────────────────────────────────────────────────────────────
