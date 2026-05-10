@@ -246,9 +246,17 @@ The `agent-running` label is the distributed claim signal. A concurrent Tachikom
 
 1. **Compute slug.** Source depends on mode:
    - Local / Remote-greenfield: derive from grill goal.
-   - `--issue`: derive from issue title — `issue-<N>-<slug-of-title>`. Keeps the issue number for traceability.
+   - `--issue`: derive from issue title; the final slug is `issue-<N>-<normalized-title>`. Keeps the issue number for traceability.
 
-   Slug normalization in all cases: lowercase, alphanumeric + dashes, max 40 chars.
+   Slug normalization (applied in this order):
+   1. **Strip leading commit/scope prefix.** If the source begins with `<word>:` or `<word>(<scope>):` (e.g. `feat:`, `fix(api):`, `tachikoma:`), drop everything up to and including that colon. These prefixes are commit-message noise, not path-worthy.
+   2. **Lowercase + dash-separate.** Replace each run of non-alphanumeric chars with a single `-`.
+   3. **Drop `tachikoma` tokens.** Remove any standalone `tachikoma` from the slug. The worktree path separator already injects one (`<REPO_NAME>-tachikoma-<slug>`); a second copy yields paths like `<REPO_NAME>-tachikoma-tachikoma-...`.
+   4. **Drop `<REPO_NAME>` substring.** Remove the repo dirname as a whole substring (multi-word repo names like `personal-nix` are matched as a single unit, not per-token). The repo name is already the parent dirname; repeating it is redundant.
+   5. **Collapse and trim.** Collapse runs of `-` to a single `-`, then strip leading/trailing `-`.
+   6. **Cap at 40 chars total** — for `--issue` mode this cap applies to the *combined* `issue-<N>-<normalized-title>` string, not to the title portion alone — then re-trim any trailing `-` produced by truncation.
+
+   This bounds the worktree-path slug at 50 chars after the repo prefix (`tachikoma-` + 40-char slug). Worked example: title `tachikoma: shorten worktree path slug` in repo `personal-nix` for issue #4 → slug `issue-4-shorten-worktree-path-slug` → path `personal-nix-tachikoma-issue-4-shorten-worktree-path-slug`.
 
 2. **Compute paths and capture variables:**
    - `MAIN_REPO` = `dirname` of `git -C <cwd> rev-parse --path-format=absolute --git-common-dir`. This is the main worktree's path regardless of which worktree the user invoked from.
