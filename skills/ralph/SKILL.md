@@ -57,7 +57,7 @@ Multiple ralphs can run concurrently in the same repo (in separate worktrees). T
 6. `git worktree` available (Git ≥ 2.5; assume yes on macOS, but verify with `git worktree list` and refuse if it errors).
 7. For `--remote` and `--issue`: `gh` CLI on PATH and authenticated (`gh auth status`).
 8. For `--issue <ref>`:
-   - The issue must exist and be open (`gh issue view <num> --json state,title,body,labels` succeeds and `state == OPEN`). If closed, refuse; user can reopen if they really mean it.
+   - The issue must exist and be open (`gh issue view <num> --json state,title,body,labels` succeeds and `state == OPEN`). This check applies at **every** invocation, not just first-time — a prior Phase 6 squash-merge can auto-close the issue (via `Closes #N`), and a re-run of `/ralph --issue <N>` against the same number must refuse rather than silently re-ralph a finished issue. If `state != OPEN`, refuse with: "Issue #N is already closed. Reopen it if you want to ralph it again."
    - The cwd repo's `nameWithOwner` must match the ref's repo (if user passed `org/repo#N`). If mismatch, refuse — `cd` first.
    - The label vocabulary must be set up in the target repo (`gh label list --limit 100` includes a label that maps to `ready-for-agent`). If absent, tell user to run `/setup-matt-pocock-skills` against this repo first.
 9. **No worktree-path or branch collision.** Compute `WORKTREE_PATH` and `RALPH_BRANCH` (Phase 3) and check up front:
@@ -242,7 +242,15 @@ Run via Bash tool in foreground:
 ```bash
 cd <WORKTREE_PATH> && .ralph/ralph.sh --once
 ```
-Stream output. When it exits, show the user `cat <WORKTREE_PATH>/.ralph/progress.txt`, then **immediately enter Phase 6** (the orchestrator is still in-session; don't print manual git instructions).
+Stream output. When the Bash tool returns, route on exit code:
+
+- **Exit 0** (clean completion): show the user `cat <WORKTREE_PATH>/.ralph/progress.txt`, then **immediately enter Phase 6** (the orchestrator is still in-session; don't print manual git instructions).
+- **Non-zero exit** (Ctrl+C, internal error, or any other abnormal termination): read `<WORKTREE_PATH>/.ralph/outcome` and route on its value:
+  - `stopped` — the user pressed Ctrl+C and the script's signal trap fired. Tell them: *"Loop was interrupted (Ctrl+C). What would you like to do?"* and immediately present the Phase R options (Resume / Review / Restart) with `WORKTREE_PATH` already selected (skip Phase R Step 0).
+  - `error` — the loop exited on an internal error. Tell them: *"Loop exited with an error at iter N. Check `<WORKTREE_PATH>/.ralph/run.log`."* Then offer the same Phase R options.
+  - missing or `unknown` — the script never wrote an outcome file (e.g. killed with SIGKILL before its trap could fire). Report the raw exit code and the path to `<WORKTREE_PATH>/.ralph/run.log`; do not auto-route to Phase 6 or Phase R. The user decides.
+
+This replaces the prior implicit "any exit goes to Phase 6" behavior — a Ctrl+C'd `--once` run is not complete and must not feed into the squash-merge prompts.
 
 ### `--afk N`
 Launch backgrounded and detached so it survives this session ending:
@@ -411,7 +419,7 @@ For the **Restart** path:
   git -C <MAIN_REPO> branch -D <RALPH_BRANCH>
   ```
   Then fall through to a fresh planning grill (Phase 1).
-- On no: confirm a softer restart — keep the worktree dir and branch, just clear `.ralph/` and `plans/prd.json` inside, fall through to a fresh planning grill. (Note: this is unusual; it leaves the worktree in a half-state. Surface this clearly.)
+- On no: exit cleanly. The user changed their mind about restarting; the worktree, branch, and `.ralph/` state are all left as-is so they can re-enter Phase R later.
 
 ## Subcommand: `/ralph status` (alias `/ralph t`)
 
