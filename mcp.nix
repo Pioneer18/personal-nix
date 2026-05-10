@@ -7,14 +7,27 @@
 { config, pkgs, lib, ... }:
 
 {
+  # Runs after secretsFromKeychain so we can source the just-written ~/.secrets
+  # and embed tokens into per-MCP env via `claude mcp add -e KEY=VAL`.
+  # Embedding (vs relying on Claude Code inheriting the spawning shell's env)
+  # is the only reliable way — Claude Code spawns MCP servers in a context
+  # that may not see your interactive shell's exports.
   home.activation.registerMCPServers =
-    lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    lib.hm.dag.entryAfter [ "writeBoundary" "secretsFromKeychain" ] ''
       # Need claude on PATH and node available for npx.
       export PATH="$HOME/.local/bin:${pkgs.nodejs_22}/bin:$PATH"
 
       if ! command -v claude >/dev/null 2>&1; then
         echo "personal-nix: claude CLI not found, skipping MCP registration"
         exit 0
+      fi
+
+      # Source ~/.secrets so we have GITHUB_PERSONAL_ACCESS_TOKEN etc. for -e flags
+      if [ -f "$HOME/.secrets" ]; then
+        set -a
+        # shellcheck disable=SC1091
+        . "$HOME/.secrets"
+        set +a
       fi
 
       # Helper: register an MCP server, replacing any prior entry with the
@@ -29,15 +42,19 @@
         fi
       }
 
-      # GitHub — GitHub's own server (github/github-mcp-server, packaged in
-      # nixpkgs). Richer toolsets than @modelcontextprotocol/server-github;
-      # enables org-scoped queries (e.g., 'list MioMarker repos') that the
-      # community server flailed on.
-      # Reads GITHUB_PERSONAL_ACCESS_TOKEN from env (alias of GITHUB_TOKEN
-      # set in ~/.secrets by secrets-from-keychain.sh).
-      register_mcp github -- \
-        ${pkgs.github-mcp-server}/bin/github-mcp-server stdio \
-        --toolsets default,orgs,notifications
+      # GitHub — GitHub's own server (github/github-mcp-server, from nixpkgs).
+      # The -e flag embeds the token into the MCP entry in ~/.claude.json so
+      # Claude Code passes it explicitly when spawning the server. Required —
+      # without it, the server starts but exits immediately ('no token') and
+      # Claude reports the MCP as unavailable in fresh sessions.
+      if [ -n "''${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
+        register_mcp github \
+          -e "GITHUB_PERSONAL_ACCESS_TOKEN=$GITHUB_PERSONAL_ACCESS_TOKEN" \
+          -- ${pkgs.github-mcp-server}/bin/github-mcp-server stdio \
+          --toolsets default,orgs,notifications
+      else
+        echo "personal-nix: GITHUB_PERSONAL_ACCESS_TOKEN not set, skipping github MCP"
+      fi
 
       # Filesystem — restrict to safe roots. Add more as needed.
       register_mcp filesystem -- \
