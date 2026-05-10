@@ -93,7 +93,7 @@ Run a Tachikoma-specific grill — do **not** invoke the generic `grill-me` skil
 
 **Cancel path.** If at any point during the grill — including the final "Approved?" prompt — the user replies with `cancel`, `stop`, `exit`, or `nevermind` (or any clear abort intent), respond with exactly *"Cancelled. Nothing was created."* and exit cleanly. Do not write any files, do not create the worktree, do not invoke `to-prd`/`to-issues`. The cancel is honored up until Phase 3 begins; once the worktree exists, the user must use `/tachikoma stop` instead.
 
-In **`--issue <ref>` mode** (fast-path flag, or grill question 3 returned an issue ref): fetch the issue first (`gh issue view <num> --json title,body,labels,comments,assignees`). The issue body is the source of truth for **goal** and **stop condition** — extract them directly. Only grill the user for fields the issue body doesn't cover (typically: files in/out of scope, quality bar, mode/cap, feedback loops). Confirm the extracted goal/stop-condition with the user before proceeding.
+In **`--issue <ref>` mode** (fast-path flag, or grill question 3 returned an issue ref): fetch the issue first (`gh issue view <num> --json title,body,labels,comments,assignees`). The issue body is the source of truth for **goal** and **stop condition** — extract them directly. Also scan the issue body (case-insensitive, whole-word) for the quality bar keywords `prototype`, `production`, and `library` — if exactly one matches, pre-fill it and skip question 2 (if multiple distinct keywords appear, the extraction is ambiguous; ask normally). Only grill the user for fields the issue body doesn't cover (typically: files in/out of scope, mode/cap, feedback loops, and quality bar when extraction failed). Confirm the extracted goal/stop-condition with the user before proceeding.
 
 ### Required fields
 
@@ -102,6 +102,8 @@ In **`--issue <ref>` mode** (fast-path flag, or grill question 3 returned an iss
    - `prototype` ("speed over perfection, shortcuts OK")
    - `production` ("must be maintainable, tests required, no shortcuts")
    - `library` ("public API, backward compatibility matters, careful with breaking changes")
+
+   *In `--issue` mode: skip this question entirely if the issue body contains exactly one of `prototype`, `production`, or `library` (case-insensitive, whole-word). Pre-fill the matched value and surface it in the grill output as `quality bar: <value> (extracted from issue body)`, so the user can override by editing the plan summary before approving. If two or three distinct keywords appear, the extraction is ambiguous — ask normally.*
 3. **Existing GitHub issue?** — Ask: *"Do you have an existing GitHub issue to work from? (paste the number, or say no)"*. Skip this question if invoked via the `--issue <ref>` or `--remote` fast-paths.
    - If the user answers with an issue ref (`138`, `#138`, or `org/repo#138`): switch this run into existing-issue mode for the rest of the grill — equivalent to `/tachikoma --issue <ref>`. Apply the `--issue` preconditions now (precondition 7 + 8), fetch the issue, and use its body as the source of truth for goal and stop condition (reconcile with the goal answered in step 1; ask the user to confirm if they diverge). Skip step 4.
    - If the user answers "no" / none / similar: continue to step 4.
@@ -132,6 +134,8 @@ After the grill, summarize all fields in a numbered list — including:
 - **Base branch** (cwd-worktree's current HEAD, where `tachikoma/<slug>` will be rooted and where Phase 6 will merge back)
 - **Tachikoma branch** (the computed `tachikoma/<slug>` name)
 - **Worktree path** (the sibling dir that will be created via `git worktree add`)
+
+Any field auto-extracted from the issue body (e.g., quality bar in `--issue` mode) must be tagged `(extracted from issue body)` in the summary so the user knows it wasn't asked, and can override it before approving.
 
 Ask "Approved?" before proceeding to Phase 2/3.
 
