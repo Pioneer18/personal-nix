@@ -42,7 +42,7 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 
 `<ref>` accepts: `#138`, `138`, or `org/repo#138`. The `org/repo` form must match the cwd repo's `nameWithOwner`; if not, refuse and tell the user to `cd` first.
 
-**Argument normalization (runs before preconditions):** if the first positional argument matches a bare integer (`/tachikoma 138`) or a `#N` pattern (`/tachikoma #138`), rewrite the invocation to `/tachikoma --issue <N>` before any further processing. This means precondition 7 (`gh` auth) and precondition 8 (issue exists, repo matches, label vocab) apply just as they would for an explicit `--issue` invocation. The shorthand is purely a parsing convenience — it has no effect once normalized.
+**Argument normalization (runs before preconditions):** if the first positional argument matches a bare integer (`/tachikoma 138`) or a `#N` pattern (`/tachikoma #138`), rewrite the invocation to `/tachikoma --issue <N>` before any further processing. This means precondition 7 (`gh` auth) and precondition 8 (issue exists, repo matches) apply just as they would for an explicit `--issue` invocation. The shorthand is purely a parsing convenience — it has no effect once normalized.
 
 `<slug>` matches against the trailing slug of the worktree's branch name (e.g. `issue-138-fix-vital-age` matches `tachikoma/issue-138-fix-vital-age`). Substring match is OK if unambiguous; otherwise refuse and list candidates.
 
@@ -60,7 +60,7 @@ Multiple tachikomas can run concurrently in the same repo (in separate worktrees
 8. For `--issue <ref>`:
    - The issue must exist and be open (`gh issue view <num> --json state,title,body,labels` succeeds and `state == OPEN`). This check applies at **every** invocation, not just first-time — a prior Phase 6 squash-merge can auto-close the issue (via `Closes #N`), and a re-run of `/tachikoma --issue <N>` against the same number must refuse rather than silently re-tachikoma a finished issue. If `state != OPEN`, refuse with: "Issue #N is already closed. Reopen it if you want to tachikoma it again."
    - The cwd repo's `nameWithOwner` must match the ref's repo (if user passed `org/repo#N`). If mismatch, refuse — `cd` first.
-   - The label vocabulary must be set up in the target repo (`gh label list --limit 100` includes a label that maps to `ready-for-agent`). If absent, tell user to run `/setup-matt-pocock-skills` against this repo first.
+   - Label vocabulary is **not** a precondition; it is auto-created by Phase 0 (see "Phase 0: label vocabulary setup" below).
 9. **No worktree-path or branch collision.** Compute `WORKTREE_PATH` and `TACHIKOMA_BRANCH` (Phase 3) and check up front:
    - If `<WORKTREE_PATH>` already exists (file or dir): refuse with the path.
    - If `git -C <MAIN_REPO> show-ref --verify --quiet refs/heads/<TACHIKOMA_BRANCH>` succeeds: refuse — that branch already exists. Tell user to delete it first or pick a different goal/issue.
@@ -82,6 +82,30 @@ Multiple tachikomas can run concurrently in the same repo (in separate worktrees
    - `/tachikoma` (no args) with only RUNNING worktrees → tell user "N tachikomas running. `/tachikoma status` to see them, `/tachikoma stop` to halt one."
    - `/tachikoma <new-args>` (start a new run) — terminal worktrees in the repo are NOT a blocker. Proceed to Phase 1; the user is starting an additional tachikoma alongside whatever's there.
    - Pure stale clutter in some worktree (`.tachikoma/` with nothing meaningful) — ignore unless user is explicitly acting on that worktree.
+
+## Phase 0: label vocabulary setup
+
+Tachikoma uses four GitHub labels for its issue lifecycle: `ready-for-agent`, `agent-running`, `ready-for-review`, `needs-triage`. Before Phase 1 begins — for any invocation that will touch GitHub issues (`--remote`, `--issue <ref>`, `/tachikoma queue <repo>`) — verify the labels exist in the target repo and silently create any that are missing.
+
+Target repo derivation:
+- `--issue <ref>`: from the ref (or cwd's `nameWithOwner` if no `org/repo` prefix).
+- `--remote`: cwd's `nameWithOwner` (`gh repo view --json nameWithOwner --jq .nameWithOwner`).
+- `/tachikoma queue <repo>`: the explicit `<repo>` argument.
+
+1. List existing labels in one call:
+   ```bash
+   gh label list --repo <org/repo> --limit 100 --json name --jq '.[].name'
+   ```
+2. Compute the missing set against the four required names.
+3. **If all four exist:** print nothing and continue to Phase 1.
+4. **If any are missing:** create each missing label silently with `gh label create <name> --repo <org/repo>` (default color/description are fine — these are internal lifecycle labels). Then emit exactly one log line, comma-separated in the order created, and continue to Phase 1:
+   ```
+   Created missing labels: <name1>, <name2>, ...
+   ```
+
+No confirmation prompt — this is infrastructure, not a decision the user needs to weigh in on. If a `gh label create` call fails (auth dropped, rate limit, etc.), surface the raw error and refuse — but never interrupt to ask the user about labels they didn't ask to be asked about.
+
+For bare `/tachikoma` (mode chosen via Phase 1 grill), the mode isn't known at preconditions time. If the user's grill answers route the run into existing-issue or remote-greenfield mode, run Phase 0 the moment that mode is selected — still before any GitHub-mutating step in Phase 2. For local mode, Phase 0 is a no-op; no labels are touched.
 
 ## Phase 1: planning grill
 
@@ -207,7 +231,7 @@ Decompose the goal into vertical-slice items. Each item should be small enough t
 3. For each child issue, render an agent brief from [AGENT-BRIEF.tmpl](AGENT-BRIEF.tmpl) using grill data + the issue body, post it as a comment, and apply the `ready-for-agent` label.
 4. Remove the `needs-triage` label from each promoted issue.
 
-The `to-prd` and `to-issues` skills require the issue tracker / label vocabulary mapping. Run `/setup-matt-pocock-skills` first if not configured.
+The `to-prd` and `to-issues` skills require their issue-tracker mapping config (which abstract states map to which concrete labels). Run `/setup-matt-pocock-skills` first if not configured. (Label *existence* in the target repo is handled separately by Phase 0 above.)
 
 ### Existing-issue mode (`--issue <ref>`)
 
