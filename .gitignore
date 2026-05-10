@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*.bak
+.vscode/
+
+# Nix
+result
+result-*
+
+# Local overrides (not currently used, but reserved)
+local.nix
+*.local.nix
