@@ -5,7 +5,7 @@ description: Manage the personal work-request queue at `~/projects/personal-nix/
 
 # Work Queue
 
-Thin manager for `~/projects/personal-nix/wiki/work-requests/`. Lists open items, walks you into a `/ralph` launch with the body pre-loaded, tracks lifecycle (`open` → `grabbed` → `done`).
+Thin manager for `~/projects/personal-nix/wiki/work-requests/`. Lists open items, walks you into a `/ralph` launch with the body pre-loaded, tracks lifecycle (`open` → `grabbed` → `done`, with `needs-triage` as a quarantine state for repeatedly-failing items).
 
 This skill does NOT launch ralph itself — Claude Code skills can't programmatically invoke other skills. The skill's job is queue-state management + seeding the next conversation turn so you only have to type `/ralph` and paste the seed.
 
@@ -19,9 +19,27 @@ This skill does NOT launch ralph itself — Claude Code skills can't programmati
 | `/work-queue add <target-repo>` | Same but skip the repo question. |
 | `/work-queue grab` | Pick the next open + ready entry; if multiple, picker. Bumps `status: grabbed`. Prints the ralph seed block. |
 | `/work-queue grab <slug>` | Grab a specific slug (substring match against filename). |
-| `/work-queue done <slug>` | Flip `status: grabbed` → `done`. Bumps `last_updated`. |
+| `/work-queue done <slug>` | Flip `status: grabbed` → `done`. Bumps `last_updated`. Refuses `needs-triage` items — see Frontmatter below. |
 
 `<slug>` matches by substring against `wiki/work-requests/*.md` filenames. Refuse if no match or ambiguous; list candidates.
+
+## Frontmatter
+
+Each work-request file carries a YAML frontmatter block. Fields written and read by this skill:
+
+| Field | Type | Written by | Purpose |
+|---|---|---|---|
+| `status` | `open` \| `grabbed` \| `done` \| `needs-triage` | this skill, `/ralph queue` | Lifecycle state. See state machine below. |
+| `target_repo` | path string (may use `~`) | this skill (`add`) | Where ralph runs. Validated for existence on `list` and `grab`. |
+| `failure_count` | integer (≥ 0; missing = 0) | `/ralph queue` only | Cumulative failure count from queue-drain runs. Bumped on any failure (cap-twice, error, stopped, blocker-exit, phase6-conflict). Never decremented. |
+| `last_updated` | ISO date (`YYYY-MM-DD`) | this skill, `/ralph queue` | Bumped on every state change. |
+
+**State machine.** This skill drives `open → grabbed` (on `grab`) and `grabbed → done` (on `done`). `/ralph queue` drives the remaining transitions:
+- `grabbed → open` on a single failure with `failure_count < 2` after bump (retryable).
+- `grabbed → needs-triage` on a failure with `failure_count ≥ 2` after bump (quarantined).
+- `grabbed → done` if `/ralph queue` completes Phase 6 successfully.
+
+`needs-triage` is a terminal-until-manual-reset state. This skill refuses to grab or mark-done a `needs-triage` item — the human must edit the file (typically resetting `status: open` and reviewing the appended `## Queue Failures` log) before it re-enters the queue.
 
 ## add flow
 
@@ -73,14 +91,15 @@ Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see
 
 1. Glob `~/projects/personal-nix/wiki/work-requests/*.md` (skip `.gitkeep` and any non-`.md`).
 2. Parse frontmatter on each. If frontmatter is malformed, skip with a warning — don't crash the whole list.
-3. Group by `status`: `open` → `grabbed` → `done`.
+3. Group by `status` in this order: `open` → `grabbed` → `needs-triage` → `done`. Any unrecognized status value goes in a trailing `Unknown` group with a warning (likely a stale schema; surface so the user can fix it).
 4. For each `open` entry, validate readiness:
    - `target_repo` field present
    - `target_repo` path exists on disk (expand `~`)
    - body length > 50 chars (avoid one-line stubs that ralph can't seed from)
 
    Mark unready entries inline with the failing reason.
-5. Output format:
+5. For each `needs-triage` entry, show `failure_count` (default 0 if missing) so the user can see how many times it failed before quarantine.
+6. Output format:
 
    ```
    Open (2)
@@ -90,22 +109,30 @@ Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see
    Grabbed (1)
      wire-up-feature-flags    — ~/projects/platform                       (since 2026-05-08)
 
+   Needs Triage (1)
+     flaky-cron-cleanup       — ~/projects/platform   2 failures          (since 2026-05-09)
+
    Done (5)
      [...older entries collapsed; show count only unless verbose...]
    ```
 
-   Keep total output under ~30 lines. If there are more than 5 done entries, collapse to a count.
+   Keep total output under ~30 lines. If there are more than 5 done entries, collapse to a count. Always show every `needs-triage` entry in full (no collapse) — they require human attention.
 
 ## grab flow
 
-1. Glob open work-requests, filter for ready (target_repo exists, body > 50 chars).
+1. Glob work-requests with `status: open`, filter for ready:
+   - `target_repo` field present and path exists on disk
+   - body length > 50 chars
+   - `failure_count < 2` (defensive — items that failed twice should already be `needs-triage`, but a manually-edited file might be `open` with a high count)
+
+   Items with `status: needs-triage` are excluded entirely (they're a separate state, not a readiness sub-condition).
 2. Pick:
-   - If user passed `<slug>`: substring match against filenames; refuse on no-match or ambiguity.
+   - If user passed `<slug>`: substring match against filenames. Refuse on no-match or ambiguity. **Refuse with a pointer to the failure log if the matched item has `status: needs-triage`** — tell the user to inspect `## Queue Failures` and reset `status: open` manually before grabbing.
    - Else if exactly one ready: that one.
    - Else if zero ready: tell user "no open + ready items; `/work-queue list` to see what's stuck." Exit.
    - Else: present picker via AskUserQuestion (show slug + target_repo + first line of body).
 3. Read full body (everything below the closing `---` of frontmatter).
-4. **Update the file in place**: change `status: open` → `status: grabbed`, set `last_updated` to today's date. Use Edit tool — preserve all other frontmatter and body verbatim.
+4. **Update the file in place**: change `status: open` → `status: grabbed`, set `last_updated` to today's date. Use Edit tool — preserve all other frontmatter (including `failure_count`) and body verbatim.
 5. Print the seed block:
 
    ```
@@ -130,8 +157,11 @@ Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see
 ## done flow
 
 1. Resolve slug: substring match against `wiki/work-requests/*.md` filenames. Refuse on no-match or ambiguity.
-2. Read frontmatter. If `status` is already `done`, tell user and exit (no-op).
-3. Update file: `status: <current>` → `status: done`, bump `last_updated`.
+2. Read frontmatter. Route on current `status`:
+   - `done` — no-op. Tell user and exit.
+   - `needs-triage` — **refuse**. Print: *"`<slug>` is `needs-triage` (failure_count: N). Inspect `## Queue Failures` in the file, then reset `status: open` manually if you want to re-queue it, or edit the file and set `status: done` directly if you've finished it by hand."* Don't auto-transition — `needs-triage` exists precisely to force human review, and a one-keystroke `done` would defeat that.
+   - `open` or `grabbed` — proceed.
+3. Update file: `status: <current>` → `status: done`, bump `last_updated`. Preserve `failure_count` verbatim — it's a historical record of how rough this item was, not something that resets on success.
 4. Confirm: `<slug> marked done. (was <previous status>)`
 
 ## Failure modes
@@ -141,7 +171,8 @@ Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see
 - **`target_repo` path doesn't exist on disk** — mark as not-ready in `list`; refuse to grab or add.
 - **Slug already exists (add)** — refuse and show the existing file. User picks a different slug or edits the existing one.
 - **Slug ambiguous (grab/done)** — list candidates, refuse to act. User retries with a more specific slug.
-- **No open + ready entries** — empty queue. Suggest `/work-queue list` to see if any are stuck on readiness.
+- **Item is `needs-triage`** — refuse `grab` and `done` with a pointer to `## Queue Failures` in the file. Human resets `status: open` (or sets `done` directly if they finished it by hand) after reading the failure log. Do not auto-transition.
+- **No open + ready entries** — empty queue. Suggest `/work-queue list` to see if any are stuck on readiness or quarantined as `needs-triage`.
 
 ## Privacy
 
