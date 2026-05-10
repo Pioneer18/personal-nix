@@ -91,7 +91,7 @@ Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see
 
 1. Glob `~/projects/personal-nix/wiki/work-requests/*.md` (skip `.gitkeep` and any non-`.md`).
 2. Parse frontmatter on each. If frontmatter is malformed, skip with a warning — don't crash the whole list.
-3. Group by `status` in this order: `open` → `grabbed` → `needs-triage` → `done`. Any unrecognized status value goes in a trailing `Unknown` group with a warning (likely a stale schema; surface so the user can fix it).
+3. Group by `status` in this order: `open` → `grabbed` → `needs-triage`. Any unrecognized status value (including `done` — stale file from before the delete-on-done change) goes in a trailing `Unknown` group with a warning; tell the user they can delete those files.
 4. For each `open` entry, validate readiness:
    - `target_repo` field present
    - `target_repo` path exists on disk (expand `~`)
@@ -111,12 +111,9 @@ Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see
 
    Needs Triage (1)
      flaky-cron-cleanup       — ~/projects/platform   2 failures          (since 2026-05-09)
-
-   Done (5)
-     [...older entries collapsed; show count only unless verbose...]
    ```
 
-   Keep total output under ~30 lines. If there are more than 5 done entries, collapse to a count. Always show every `needs-triage` entry in full (no collapse) — they require human attention.
+   Keep total output under ~30 lines. Always show every `needs-triage` entry in full — they require human attention. Done items don't appear (files are deleted on done).
 
 ## grab flow
 
@@ -156,13 +153,14 @@ Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see
 
 ## done flow
 
+Completed work-request files have no retention value — the goal/scope/stop-condition all live in the commit. Delete, don't archive.
+
 1. Resolve slug: substring match against `wiki/work-requests/*.md` filenames. Refuse on no-match or ambiguity.
 2. Read frontmatter. Route on current `status`:
-   - `done` — no-op. Tell user and exit.
-   - `needs-triage` — **refuse**. Print: *"`<slug>` is `needs-triage` (failure_count: N). Inspect `## Queue Failures` in the file, then reset `status: open` manually if you want to re-queue it, or edit the file and set `status: done` directly if you've finished it by hand."* Don't auto-transition — `needs-triage` exists precisely to force human review, and a one-keystroke `done` would defeat that.
+   - `needs-triage` — **refuse**. Print: *"`<slug>` is `needs-triage` (failure_count: N). Inspect `## Queue Failures` in the file, then reset `status: open` manually if you want to re-queue it, or delete the file directly if you've finished it by hand."* Don't auto-delete — `needs-triage` exists precisely to force human review.
    - `open` or `grabbed` — proceed.
-3. Update file: `status: <current>` → `status: done`, bump `last_updated`. Preserve `failure_count` verbatim — it's a historical record of how rough this item was, not something that resets on success.
-4. Confirm: `<slug> marked done. (was <previous status>)`
+3. Delete the file: `rm ~/projects/personal-nix/wiki/work-requests/<slug>.md`.
+4. Confirm: `<slug> deleted. (was <previous status>)`
 
 ## Failure modes
 
@@ -182,5 +180,5 @@ Same constraints as the wiki itself — `personal-nix` is a public GitHub repo. 
 
 - **Launch ralph.** Skills can't invoke other skills. This skill prepares the launch and prints the seed; you type `/ralph`.
 - **Concurrent batch launch.** Single-item grab only. Multi-launch was scoped out — most queues are <5 items and grilling each one is the right discipline.
-- **Auto status updates on merge.** No webhook, no PR-watcher. You run `/work-queue done <slug>` after merge. If that friction adds up, we can build a `/ralph done` hook that also bumps queue status.
+- **Auto status updates on merge.** Ralph's Phase 6 Step 8 calls `/work-queue done <slug>` automatically when the branch matches a work-request slug. For non-ralph work or manual merges, run `/work-queue done <slug>` yourself.
 - **Errand-flavored items.** Non-ralph agent tasks (browser automation, filesystem errands, etc.) live in `wiki/inbox/` with tag `errand` for now. If those accumulate (≥3), promote `errands/` into the wiki vocabulary and write its own launcher.

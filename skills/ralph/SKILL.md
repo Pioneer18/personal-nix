@@ -364,12 +364,23 @@ gh issue close <N> --comment "Resolved via Ralph: squash-merged <RALPH_BRANCH> i
 Where `<pr-line-if-any>` is `\nPR: <url>` if a PR was opened, else empty.
 
 **Step 8 — Final cleanup.**
-- If Step 5 user said yes: worktree (and `.ralph/`) are gone. Nothing more to do.
+- If Step 5 user said yes: worktree (and `.ralph/`) are gone. Nothing more to do for git state.
 - If Step 5 user said no: remove `<WORKTREE_PATH>/.ralph/outcome` so a future `/ralph` invocation doesn't keep routing to Phase 6 for this finished run:
   ```bash
   rm -f <WORKTREE_PATH>/.ralph/outcome
   ```
   Leave the rest of `.ralph/` (prompt, run.log, progress.txt) and the worktree itself for the user.
+
+**Step 9 — Work-queue cleanup.**
+
+Only runs after a successful squash-merge (Step 4 user said yes).
+
+Derive the work-request slug by stripping the `ralph/` prefix from `RALPH_BRANCH`:
+```
+SLUG = RALPH_BRANCH.removePrefix("ralph/")
+```
+
+Check if `~/projects/personal-nix/wiki/work-requests/<SLUG>.md` exists. If it does, invoke `/work-queue done <SLUG>` to delete it. If it doesn't, skip silently — not every ralph run originates from the work queue.
 
 **If user bails mid-Phase-6** (says no at Step 4): exit cleanly. State is recoverable — `<WORKTREE_PATH>/.ralph/outcome=complete` stays, so `/ralph done` works again later. Phase 6 is idempotent; re-entering picks up where they left off. Steps that already happened (already-merged, already-pushed) are detected by re-running the same probe (e.g. `git log <BASE_BRANCH>..<RALPH_BRANCH>` empty → already merged → skip to Step 5).
 
