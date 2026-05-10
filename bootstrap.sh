@@ -129,7 +129,7 @@ cat <<EOF
 
   Verify:
     cat ~/.secrets                    # should have CLAUDE_CODE_OAUTH_TOKEN, GITHUB_TOKEN
-    claude mcp list                   # should show github, postgres, applescript, filesystem
+    claude mcp list                   # should show github, tachikoma, applescript, filesystem
     ls -la ~/.claude/skills/          # should include symlinks into $PERSONAL_DIR/skills/
 
 EOF

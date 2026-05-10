@@ -1,6 +1,6 @@
 ---
 name: issue-1-tachikoma-starter-nix-flake
-status: grabbed
+status: done
 github_issue: MioMarker/tachikoma-starter#1
 target_repo: /Users/pioneer/Projects/tachikoma-starter
 last_updated: 2026-05-10

@@ -157,8 +157,9 @@ After the grill, present a single combined view that the user approves once. Thi
 
 **Section A — Field summary** (numbered list, all the fields collected above) plus:
 - **Iteration mode** (rendered as the raw flag form: `--once` or `--afk N`, so the user can see what Phase 5 will execute even though they answered in plain language)
-- **Base branch** (cwd-worktree's current HEAD, where `tachikoma/<slug>` will be rooted and where Phase 6 will merge back)
-- **Tachikoma branch** (the computed `tachikoma/<slug>` name)
+- **PR target branch** (`develop` if it exists, `dev` if it exists, else user-specified — the branch the issue branch will PR against)
+- **Issue branch** (e.g. `feat/issue-<N>-<slug>` — created off the PR target branch; squash-merge lands here in Phase 6)
+- **Tachikoma branch** (the computed `tachikoma/<slug>` name — branches off the issue branch)
 - **Worktree path** (the sibling dir that will be created via `git worktree add`)
 
 Any field auto-extracted from the issue body (e.g., quality bar in `--issue` mode) must be tagged `(extracted from issue body)` in the summary so the user knows it wasn't asked, and can override it.
@@ -287,24 +288,31 @@ The `agent-running` label is the distributed claim signal. A concurrent Tachikom
    - `REPO_NAME` = `basename "$MAIN_REPO"` (e.g. `platform`).
    - `TACHIKOMA_BRANCH` = `tachikoma/<slug>` (e.g. `tachikoma/issue-138-fix-vital-age`).
    - `WORKTREE_PATH` = `<dirname $MAIN_REPO>/<REPO_NAME>-tachikoma-<slug>` (e.g. `/Users/pioneer/Projects/platform-tachikoma-issue-138-fix-vital-age`).
-   - `BASE_BRANCH` = `git -C <cwd> rev-parse --abbrev-ref HEAD` — captured from the **cwd worktree**, not main repo. This is the branch the new tachikoma branches off, and the merge target for Phase 6.
+   - `PR_TARGET_BRANCH` — determined by checking (in order): does `develop` exist (`git -C <MAIN_REPO> show-ref --verify --quiet refs/heads/develop`)? Does `dev` exist? If neither, ask the user: *"No `develop` or `dev` branch found. Which branch should the PR target?"* This is the branch the issue branch will PR against.
+   - `ISSUE_BRANCH` = `feat/<slug>` for local/remote mode; `feat/issue-<N>-<slug>` for `--issue` mode. This intermediate branch is created off `PR_TARGET_BRANCH` and is the squash-merge target in Phase 6.
+   - `BASE_BRANCH` = `ISSUE_BRANCH`. The branch the tachikoma branches off and the merge target for Phase 6. (Stored in `.tachikoma/base_branch`.)
 
 3. **Collision check** (precondition 9 applied here in detail):
    - If `<WORKTREE_PATH>` exists: refuse with the exact path. Tell user to remove it (`git -C <MAIN_REPO> worktree remove <WORKTREE_PATH>`) or pick a different goal.
+   - If `<ISSUE_BRANCH>` already exists (`git -C <MAIN_REPO> show-ref --verify --quiet refs/heads/<ISSUE_BRANCH>`): refuse — that branch already exists. Tell user to delete it first.
    - If `<TACHIKOMA_BRANCH>` already exists (`git -C <MAIN_REPO> show-ref --verify --quiet refs/heads/<TACHIKOMA_BRANCH>`): refuse and tell user to delete it (`git -C <MAIN_REPO> branch -D <TACHIKOMA_BRANCH>`) or finish/abandon the existing run.
 
-4. **Create the worktree:**
+4. **Create the issue branch and worktree:**
    ```bash
-   git -C <MAIN_REPO> worktree add <WORKTREE_PATH> -b <TACHIKOMA_BRANCH> <BASE_BRANCH>
+   # Create the issue branch off PR_TARGET_BRANCH (no checkout — stays in background):
+   git -C <MAIN_REPO> branch <ISSUE_BRANCH> <PR_TARGET_BRANCH>
+   # Create the tachikoma worktree branching off ISSUE_BRANCH:
+   git -C <MAIN_REPO> worktree add <WORKTREE_PATH> -b <TACHIKOMA_BRANCH> <ISSUE_BRANCH>
    ```
-   This creates the worktree directory, the new branch, and checks the branch out in that worktree.
+   This creates the issue branch, the tachikoma branch off it, and a clean worktree directory.
 
 5. **Scaffold inside the worktree.** All paths below are relative to `<WORKTREE_PATH>`:
    - Append `.tachikoma/` to `<WORKTREE_PATH>/.gitignore` if not already there.
    - Create `<WORKTREE_PATH>/.tachikoma/`.
    - Render `<WORKTREE_PATH>/.tachikoma/tachikoma.sh` from [tachikoma.sh.tmpl](tachikoma.sh.tmpl). **Set `{{REPO_PATH}} = WORKTREE_PATH`** (the script's `cd "$REPO"` keeps everything inside the worktree). `chmod +x`.
    - Render `<WORKTREE_PATH>/.tachikoma/prompt.md` from [prompt.md.tmpl](prompt.md.tmpl).
-   - Write `<WORKTREE_PATH>/.tachikoma/base_branch` — single line containing `<BASE_BRANCH>`. Phase 6 reads this to know the merge target. (Conversation context isn't enough — AFK runs span sessions.)
+   - Write `<WORKTREE_PATH>/.tachikoma/base_branch` — single line containing `<ISSUE_BRANCH>`. Phase 6 reads this to know the squash-merge target. (Conversation context isn't enough — AFK runs span sessions.)
+   - Write `<WORKTREE_PATH>/.tachikoma/pr_target_branch` — single line containing `<PR_TARGET_BRANCH>`. Phase 6 reads this to know what branch to open the PR against.
    - In **local** mode only: write `<WORKTREE_PATH>/plans/prd.json`.
 
 6. **Commit the scaffolding inside the worktree** so the loop's first iteration has a clean tree. Use `git -C <WORKTREE_PATH>`:
@@ -315,9 +323,10 @@ The `agent-running` label is the distributed claim signal. A concurrent Tachikom
 
 7. **Print the worktree path prominently.** The orchestrator's cwd doesn't change, so the user needs the path to tail logs, open the worktree in an editor, or cd there manually. Format:
    ```
-   Worktree: <WORKTREE_PATH>
-   Branch:   <TACHIKOMA_BRANCH>  (off <BASE_BRANCH>)
-   Tail:     tail -f <WORKTREE_PATH>/.tachikoma/run.log
+   Worktree:     <WORKTREE_PATH>
+   Branch:       <TACHIKOMA_BRANCH>  (off <ISSUE_BRANCH>)
+   Issue branch: <ISSUE_BRANCH>  (→ PR against <PR_TARGET_BRANCH>)
+   Tail:         tail -f <WORKTREE_PATH>/.tachikoma/run.log
    ```
 
 > Phase 4 (the standalone prompt review) was merged into Phase 1's combined plan-summary-and-launch confirmation. Phase 5's number is preserved so cross-references in this skill, in run logs, and in user muscle memory stay valid; there is no separate gate between Phase 3 and Phase 5.
@@ -447,10 +456,13 @@ Present output verbatim. Don't summarize.
   (`-D` is required — squash-merge isn't fast-forward, so `-d` would refuse.)
 - On no: leave both. User can clean up manually later via `git worktree remove ...` and `git branch -D ...`. They might want to copy something out of the worktree first.
 
-**Step 6 — Offer PR.** Only if `git -C <BASE_WT> remote -v` shows a remote AND `gh auth status` succeeds: *"Push `<BASE_BRANCH>` and open a PR?"*
+**Step 6 — Offer PR.** Only if `git -C <BASE_WT> remote -v` shows a remote AND `gh auth status` succeeds: *"Push `<BASE_BRANCH>` and open a PR against `<PR_TARGET_BRANCH>`?"*
+
+Read `PR_TARGET_BRANCH` from `<WORKTREE_PATH>/.tachikoma/pr_target_branch` (fallback: ask user).
+
 - On yes:
   - Push if needed: `git -C <BASE_WT> push -u origin <BASE_BRANCH>`
-  - Open PR: `gh -R <owner/repo> pr create --title "<derived>" --body "<derived>" --base <default-branch> --head <BASE_BRANCH>`. For `--issue` mode, body should reference `Closes #<N>`. Show the proposed title/body and let user edit before running.
+  - Open PR: `gh -R <owner/repo> pr create --title "<derived>" --body "<derived>" --base <PR_TARGET_BRANCH> --head <BASE_BRANCH>`. For `--issue` mode, body should reference `Closes #<N>`. Show the proposed title/body and let user edit before running.
   - Print the PR URL. Capture for Step 7.
 - On no: skip; user can do it manually later.
 

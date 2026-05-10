@@ -1,5 +1,5 @@
 ---
-status: grabbed
+status: done
 target_repo: /Users/pioneer/Projects/personal-nix
 github_issue: Pioneer18/personal-nix#1
 failure_count: 0

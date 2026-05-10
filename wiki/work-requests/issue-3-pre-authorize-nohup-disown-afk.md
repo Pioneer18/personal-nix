@@ -1,5 +1,5 @@
 ---
-status: open
+status: done
 target_repo: /Users/pioneer/Projects/personal-nix
 github_issue: Pioneer18/personal-nix#3
 failure_count: 0
