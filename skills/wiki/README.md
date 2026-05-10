@@ -72,6 +72,6 @@ Symlink at `~/.claude/skills/wiki` points at the live working tree (after `dev` 
 - **Auto-memory** (`~/.claude/projects/.../memory/`) — Claude's session-spanning notes about you. Auto-captured. Private/local. Use for sensitive context.
 - **`orient-to-machine` skill** — architectural map of this Mac (nix-darwin, layers, recipes for modifications). Use when you need to *change* the machine, not just look something up.
 - **Global `CLAUDE.md`** (`~/.claude/CLAUDE.md`) — instructions loaded into every session. Use for behavior rules, not knowledge.
-- **Per-skill READMEs** — canonical docs for each skill (e.g., `skills/ralph/README.md`). The wiki's `tools/` stubs link to these.
+- **Per-skill READMEs** — canonical docs for each skill (e.g., `skills/tachikoma/README.md`). The wiki's `tools/` stubs link to these.
 
 The wiki is for **knowledge that's true regardless of session, durable, queryable on demand.** Anything else belongs in one of the systems above.

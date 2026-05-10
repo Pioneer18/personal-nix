@@ -65,15 +65,15 @@
       # Lets Claude script Mail, Calendar, Music, Safari, Finder, etc.
       register_mcp applescript -- npx -y @peakmojo/applescript-mcp
 
-      # Ralph — local MCP for ralph_status and ralph_dispatch.
-      # Deps are pre-installed into mcps/ralph-mcp/node_modules at build time.
-      RALPH_MCP_DIR="$HOME/projects/personal-nix/mcps/ralph-mcp"
-      if [ -d "$RALPH_MCP_DIR" ]; then
-        (cd "$RALPH_MCP_DIR" && npm install --quiet 2>/dev/null) || true
-        register_mcp ralph -- \
-          node --experimental-strip-types "$RALPH_MCP_DIR/index.ts"
+      # Tachikoma — local MCP for tachikoma_status and tachikoma_dispatch.
+      # Deps are pre-installed into mcps/tachikoma-mcp/node_modules at build time.
+      TACHIKOMA_MCP_DIR="$HOME/projects/personal-nix/mcps/tachikoma-mcp"
+      if [ -d "$TACHIKOMA_MCP_DIR" ]; then
+        (cd "$TACHIKOMA_MCP_DIR" && npm install --quiet 2>/dev/null) || true
+        register_mcp tachikoma -- \
+          node --experimental-strip-types "$TACHIKOMA_MCP_DIR/index.ts"
       else
-        echo "personal-nix: ralph-mcp dir not found, skipping"
+        echo "personal-nix: tachikoma-mcp dir not found, skipping"
       fi
 
       # Postgres — official server. Connection string is a placeholder;

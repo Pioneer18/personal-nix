@@ -1,13 +1,13 @@
 ---
 name: work-queue
-description: Manage the personal work-request queue at `~/projects/personal-nix/wiki/work-requests/`. Create, list, grab, and mark items done. Triggers — `/work-queue`, `/work-queue list`, `/work-queue add`, `/work-queue add <target-repo>`, `/work-queue grab`, `/work-queue grab <slug>`, `/work-queue done <slug>`, or any natural-language request like "what's queued?", "add a work request", "create a work request", "start the next work request", "grab the next one for ralph", "mark this work request done".
+description: Manage the personal work-request queue at `~/projects/personal-nix/wiki/work-requests/`. Create, list, grab, and mark items done. Triggers — `/work-queue`, `/work-queue list`, `/work-queue add`, `/work-queue add <target-repo>`, `/work-queue grab`, `/work-queue grab <slug>`, `/work-queue done <slug>`, or any natural-language request like "what's queued?", "add a work request", "create a work request", "start the next work request", "grab the next one for tachikoma", "mark this work request done".
 ---
 
 # Work Queue
 
-Thin manager for `~/projects/personal-nix/wiki/work-requests/`. Lists open items, walks you into a `/ralph` launch with the body pre-loaded, tracks lifecycle (`open` → `grabbed` → `done`, with `needs-triage` as a quarantine state for repeatedly-failing items).
+Thin manager for `~/projects/personal-nix/wiki/work-requests/`. Lists open items, walks you into a `/tachikoma` launch with the body pre-loaded, tracks lifecycle (`open` → `grabbed` → `done`, with `needs-triage` as a quarantine state for repeatedly-failing items).
 
-This skill does NOT launch ralph itself — Claude Code skills can't programmatically invoke other skills. The skill's job is queue-state management + seeding the next conversation turn so you only have to type `/ralph` and paste the seed.
+This skill does NOT launch tachikoma itself — Claude Code skills can't programmatically invoke other skills. The skill's job is queue-state management + seeding the next conversation turn so you only have to type `/tachikoma` and paste the seed.
 
 ## Invocation
 
@@ -17,7 +17,7 @@ This skill does NOT launch ralph itself — Claude Code skills can't programmati
 | `/work-queue list` | Show all entries grouped by status. Flag readiness issues inline. |
 | `/work-queue add` | Grill the user for a new work item, then write it as a structured work-request file. |
 | `/work-queue add <target-repo>` | Same but skip the repo question. |
-| `/work-queue grab` | Pick the next open + ready entry; if multiple, picker. Bumps `status: grabbed`. Prints the ralph seed block. |
+| `/work-queue grab` | Pick the next open + ready entry; if multiple, picker. Bumps `status: grabbed`. Prints the tachikoma seed block. |
 | `/work-queue grab <slug>` | Grab a specific slug (substring match against filename). |
 | `/work-queue done <slug>` | Flip `status: grabbed` → `done`. Bumps `last_updated`. Refuses `needs-triage` items — see Frontmatter below. |
 
@@ -29,21 +29,21 @@ Each work-request file carries a YAML frontmatter block. Fields written and read
 
 | Field | Type | Written by | Purpose |
 |---|---|---|---|
-| `status` | `open` \| `grabbed` \| `done` \| `needs-triage` | this skill, `/ralph queue` | Lifecycle state. See state machine below. |
-| `target_repo` | path string (may use `~`) | this skill (`add`) | Where ralph runs. Validated for existence on `list` and `grab`. |
-| `failure_count` | integer (≥ 0; missing = 0) | `/ralph queue` only | Cumulative failure count from queue-drain runs. Bumped on any failure (cap-twice, error, stopped, blocker-exit, phase6-conflict). Never decremented. |
-| `last_updated` | ISO date (`YYYY-MM-DD`) | this skill, `/ralph queue` | Bumped on every state change. |
+| `status` | `open` \| `grabbed` \| `done` \| `needs-triage` | this skill, `/tachikoma queue` | Lifecycle state. See state machine below. |
+| `target_repo` | path string (may use `~`) | this skill (`add`) | Where tachikoma runs. Validated for existence on `list` and `grab`. |
+| `failure_count` | integer (≥ 0; missing = 0) | `/tachikoma queue` only | Cumulative failure count from queue-drain runs. Bumped on any failure (cap-twice, error, stopped, blocker-exit, phase6-conflict). Never decremented. |
+| `last_updated` | ISO date (`YYYY-MM-DD`) | this skill, `/tachikoma queue` | Bumped on every state change. |
 
-**State machine.** This skill drives `open → grabbed` (on `grab`) and `grabbed → done` (on `done`). `/ralph queue` drives the remaining transitions:
+**State machine.** This skill drives `open → grabbed` (on `grab`) and `grabbed → done` (on `done`). `/tachikoma queue` drives the remaining transitions:
 - `grabbed → open` on a single failure with `failure_count < 2` after bump (retryable).
 - `grabbed → needs-triage` on a failure with `failure_count ≥ 2` after bump (quarantined).
-- `grabbed → done` if `/ralph queue` completes Phase 6 successfully.
+- `grabbed → done` if `/tachikoma queue` completes Phase 6 successfully.
 
 `needs-triage` is a terminal-until-manual-reset state. This skill refuses to grab or mark-done a `needs-triage` item — the human must edit the file (typically resetting `status: open` and reviewing the appended `## Queue Failures` log) before it re-enters the queue.
 
 ## add flow
 
-**Purpose:** capture a new work item from the user and store it as a well-formed, ralph-ready work-request file. Uses a relentless one-at-a-time grill to ensure every required field is specific, measurable, and unambiguous.
+**Purpose:** capture a new work item from the user and store it as a well-formed, tachikoma-ready work-request file. Uses a relentless one-at-a-time grill to ensure every required field is specific, measurable, and unambiguous.
 
 **Step 1 — Target repo**
 
@@ -65,9 +65,9 @@ Fields to resolve, in order:
 1. **Slug** — short kebab-case filename (e.g. `fix-vital-age`, `refactor-auth-middleware`). Recommend one based on the task description. Refuse if a file with that name already exists in `wiki/work-requests/`.
 2. **Title** — human-readable title for the H1 in the file. Recommend title-cased slug.
 3. **Description** — one-sentence summary of the work (optional but encouraged). Recommend based on what the user has described so far.
-4. **Goal** — the "Ralph is done when…" statement. Must be specific and end-state-focused. Push back on vague goals like "improve the code" — keep grilling until it's concrete.
-5. **Files in scope** — globs or paths ralph may read and modify. Recommend based on repo exploration.
-6. **Files out of scope** — globs or paths ralph must not touch. Recommend obvious exclusions (e.g. lock files, generated assets, unrelated modules).
+4. **Goal** — the "Tachikoma is done when…" statement. Must be specific and end-state-focused. Push back on vague goals like "improve the code" — keep grilling until it's concrete.
+5. **Files in scope** — globs or paths tachikoma may read and modify. Recommend based on repo exploration.
+6. **Files out of scope** — globs or paths tachikoma must not touch. Recommend obvious exclusions (e.g. lock files, generated assets, unrelated modules).
 7. **Stop condition** — concrete acceptance criteria (readable as a checklist). Must be independently verifiable without running the app. Recommend based on goal.
 8. **Feedback loops** — commands to verify correctness: typecheck, tests, lint. Recommend commands discovered from repo exploration (e.g. `npx tsc --noEmit`, `npm test`). Confirm with user before accepting.
 9. **Quality bar** — `prototype`, `production`, or `library`. Recommend based on the target repo and task nature. Explain the tradeoff if the user is unsure: prototype = fast+rough, production = correct+polished, library = API stability matters.
@@ -84,7 +84,7 @@ Created: wiki/work-requests/<slug>.md
   target:      <target_repo>
   quality bar: <quality_bar>
 
-Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see the queue.
+Run `/work-queue grab <slug>` to prep it for tachikoma, or `/work-queue list` to see the queue.
 ```
 
 ## list flow
@@ -95,7 +95,7 @@ Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see
 4. For each `open` entry, validate readiness:
    - `target_repo` field present
    - `target_repo` path exists on disk (expand `~`)
-   - body length > 50 chars (avoid one-line stubs that ralph can't seed from)
+   - body length > 50 chars (avoid one-line stubs that tachikoma can't seed from)
 
    Mark unready entries inline with the failing reason.
 5. For each `needs-triage` entry, show `failure_count` (default 0 if missing) so the user can see how many times it failed before quarantine.
@@ -138,10 +138,10 @@ Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see
 
    Next steps:
      1. cd <target_repo>
-     2. /ralph
-     3. When ralph's grill asks for goal / files-in-scope / stop-condition,
+     2. /tachikoma
+     3. When tachikoma's grill asks for goal / files-in-scope / stop-condition,
         use the body below as your source.
-     4. After ralph launches in --afk and the work merges:
+     4. After tachikoma launches in --afk and the work merges:
         /work-queue done <slug>
 
    --- work-request body (verbatim) ---
@@ -149,7 +149,7 @@ Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see
    ---
    ```
 
-   Do NOT auto-cd or auto-invoke ralph. The user runs those.
+   Do NOT auto-cd or auto-invoke tachikoma. The user runs those.
 
 ## done flow
 
@@ -178,7 +178,7 @@ Same constraints as the wiki itself — `personal-nix` is a public GitHub repo. 
 
 ## What this skill does NOT do (yet)
 
-- **Launch ralph.** Skills can't invoke other skills. This skill prepares the launch and prints the seed; you type `/ralph`.
+- **Launch tachikoma.** Skills can't invoke other skills. This skill prepares the launch and prints the seed; you type `/tachikoma`.
 - **Concurrent batch launch.** Single-item grab only. Multi-launch was scoped out — most queues are <5 items and grilling each one is the right discipline.
-- **Auto status updates on merge.** Ralph's Phase 6 Step 8 calls `/work-queue done <slug>` automatically when the branch matches a work-request slug. For non-ralph work or manual merges, run `/work-queue done <slug>` yourself.
-- **Errand-flavored items.** Non-ralph agent tasks (browser automation, filesystem errands, etc.) live in `wiki/inbox/` with tag `errand` for now. If those accumulate (≥3), promote `errands/` into the wiki vocabulary and write its own launcher.
+- **Auto status updates on merge.** Tachikoma's Phase 6 Step 9 calls `/work-queue done <slug>` automatically when the branch matches a work-request slug. For non-tachikoma work or manual merges, run `/work-queue done <slug>` yourself.
+- **Errand-flavored items.** Non-tachikoma agent tasks (browser automation, filesystem errands, etc.) live in `wiki/inbox/` with tag `errand` for now. If those accumulate (≥3), promote `errands/` into the wiki vocabulary and write its own launcher.

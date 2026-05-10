@@ -15,7 +15,7 @@ This INDEX is static. The `/wiki` skill provides search and listing on demand �
 | `runbooks/` | "When X breaks, do Y." Incident-response playbooks. | Recipes — runbooks fire on failure, recipes are setup |
 | `inbox/` | Friction-free staging for captures you haven't categorized yet. | Triage periodically — promote to a real subdir |
 | `notes/` | Random saves, half-formed thoughts, anything not warranting its own subdir yet. Tag-categorized. | Inbox (which is unsorted); notes are kept-as-notes intentionally |
-| `work-requests/` | Work captured for ralph to pick up later — alternative to GitHub issues. `status` field tracks `open` / `grabbed` / `done`. | Inbox (unsorted) — work-requests are intentional, ralph-targeted |
+| `work-requests/` | Work captured for tachikoma to pick up later — alternative to GitHub issues. `status` field tracks `open` / `grabbed` / `done`. | Inbox (unsorted) — work-requests are intentional, tachikoma-targeted |
 
 ## Frontmatter conventions
 
@@ -32,7 +32,7 @@ Subdir-specific extras:
 - **`tools/`**: `summary` (one-liner for catalog listings), `category` (string e.g. "agent-dev", "shell", "nix"), `link` (path or URL to canonical doc)
 - **`glossary/`**: `term` (the word being defined)
 - **`decisions/`**: `status` (`proposed` / `accepted` / `superseded`), optional `supersedes` / `superseded_by` (slug refs)
-- **`work-requests/`**: `target_repo` (required, absolute path of the codebase ralph should worktree from), `status` (`open` / `grabbed` / `done`)
+- **`work-requests/`**: `target_repo` (required, absolute path of the codebase tachikoma should worktree from), `status` (`open` / `grabbed` / `done`)
 
 ## Privacy
 

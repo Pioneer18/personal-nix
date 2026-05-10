@@ -16,7 +16,7 @@ Pioneer18's machine wiki. Knowledge that outlives any single Claude session, que
 - `runbooks/` — "when X breaks, do Y"
 - `inbox/` — uncategorized captures (triage later)
 - `notes/` — random saves, tag-categorized
-- `work-requests/` — work captured for ralph to pick up later (alternative to GitHub issues)
+- `work-requests/` — work captured for tachikoma to pick up later (alternative to GitHub issues)
 
 ## Invocation
 
@@ -47,7 +47,7 @@ If `<subdir>` is not in the fixed vocabulary above, refuse and list valid subdir
    - Return up to 10 matches, ordered by relevance, formatted as: `<path> — <title> — <one-line summary>`.
    - If 0 matches: say so and suggest `/wiki <subdir>` to browse, or `/wiki add` to capture.
 
-4. **Following links** — when a `tools/` entry has a `link` field pointing to a local file (e.g., `~/projects/personal-nix/skills/ralph/README.md`), do not auto-follow. Surface the link and let the user decide. If the user explicitly asks for the full doc, then read it.
+4. **Following links** — when a `tools/` entry has a `link` field pointing to a local file (e.g., `~/projects/personal-nix/skills/tachikoma/README.md`), do not auto-follow. Surface the link and let the user decide. If the user explicitly asks for the full doc, then read it.
 
 ## Add flow
 
@@ -100,16 +100,16 @@ When a `decisions/` entry is replaced by a newer one, the user may ask to mark i
 
 If a `glossary/` entry already exists for the term, prefer **editing** the existing entry over creating a duplicate. Glossary terms should have exactly one entry.
 
-### Work requests and ralph
+### Work requests and tachikoma
 
-`work-requests/` entries are durable seeds for ralph runs — an alternative to filing a GitHub issue. Lifecycle:
+`work-requests/` entries are durable seeds for tachikoma runs — an alternative to filing a GitHub issue. Lifecycle:
 
 - New entries default to `status: open`.
-- Every entry must have a `target_repo` — the absolute path of the codebase ralph should worktree from. Validate it exists at write time; refuse if not.
-- When the user points ralph at an entry, update its `status` to `grabbed` (and bump `last_updated`).
+- Every entry must have a `target_repo` — the absolute path of the codebase tachikoma should worktree from. Validate it exists at write time; refuse if not.
+- When the user points tachikoma at an entry, update its `status` to `grabbed` (and bump `last_updated`).
 - When the work lands (PR merged or task abandoned), update to `status: done`.
 
-When the user asks "what work do I have queued?" or similar, list `work-requests/` entries with `status: open` first. Ralph will typically interview/expand the entry into a PRD before looping — the entry is the seed, not the spec.
+When the user asks "what work do I have queued?" or similar, list `work-requests/` entries with `status: open` first. Tachikoma will typically interview/expand the entry into a PRD before looping — the entry is the seed, not the spec.
 
 Same privacy guardrails as the rest of the wiki: public repo, so no RelyMD work.
 
