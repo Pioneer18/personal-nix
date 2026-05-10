@@ -6,9 +6,10 @@
 {
   home.packages = with pkgs; [
     # Mac-native automation
-    displayplacer       # arrange external displays from CLI
     switchaudio-osx     # change audio input/output devices from CLI
     mas                 # Mac App Store CLI (install, update, list)
+    # NOTE: displayplacer is brew-only (not in nixpkgs). If you want it,
+    # add `displayplacer` to homebrew.brews in hosts/jonathan-sells-darwin.nix.
 
     # Convenience
     just                # task runner (per-project Justfile)
