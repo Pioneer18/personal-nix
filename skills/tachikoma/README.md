@@ -12,14 +12,15 @@ Pocock's "Tachikoma Wiggum" autonomous AI coding loop, adapted to this machine, 
 
 | Form | Behavior |
 |---|---|
-| `/tachikoma <goal>` | Plan + run. Mode (existing-issue / local / remote-greenfield) is chosen via two grill questions in Phase 1. New sibling worktree. |
-| `/tachikoma --remote <goal>` | Fast-path: skip the mode-selection grill questions and go straight to remote-greenfield mode. PRD via `to-prd` → `to-issues`. New worktree. |
+| `/tachikoma` | Plan + run. Mode (existing-issue / local / remote-greenfield) is chosen via two grill questions in Phase 1. New sibling worktree. |
+| `/tachikoma --remote` | Fast-path: skip the mode-selection grill questions and go straight to remote-greenfield mode. PRD via `to-prd` → `to-issues`. New worktree. |
 | `/tachikoma --issue <ref>` | Fast-path: skip the mode-selection grill questions and go straight to existing-issue mode. Uses GitHub issue body as PRD. New worktree. `<ref>` accepts `#138`, `138`, `org/repo#138`. |
 | `/tachikoma 138` or `/tachikoma #138` | Shorthand — a bare integer or `#N` first arg is normalized to `/tachikoma --issue <N>` before preconditions run. Same fast-path behavior. |
-| `/tachikoma done` (`<slug>`?) | Phase 6 — interactive squash-merge into base + worktree+branch cleanup + optional PR/issue-close. Picker if >1 completed; auto-pick if 1. |
-| `/tachikoma resume` (`<slug>`?) | Phase R — re-launch an interrupted loop. Picker if >1 recoverable. |
-| `/tachikoma status` (alias `/tachikoma t`, `<slug>`?) | Read-only telemetry. No args: compact summary table across all tachikoma worktrees in the repo. With slug: drill in. |
-| `/tachikoma stop` (`<slug>`? or `--all`) | SIGTERM. Cwd-implicit if cwd is a tachikoma worktree. Picker if >1 running. |
+| `/tachikoma done` (optionally `<slug>`) | Phase 6 — interactive squash-merge into base + worktree+branch cleanup + optional PR/issue-close. Picker if >1 completed; auto-pick if 1. |
+| `/tachikoma resume` (optionally `<slug>`) | Phase R — re-launch an interrupted loop. Picker if >1 recoverable. |
+| `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Read-only telemetry. No args: compact summary table across all tachikoma worktrees in the repo. With slug: drill in. |
+| `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is a tachikoma worktree. Picker if >1 running. |
+| `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full Phases 1–6 per item. Batch preferences set once up front. With `--caffeinated` / `-C`: wraps each item's launch with `caffeinate -d` to prevent macOS sleep during long overnight runs. |
 
 ## File layout
 
@@ -116,6 +117,9 @@ Reasoning so future-you doesn't relitigate.
 - **Refuses to start because cwd is an active tachikoma worktree** — cd to main repo or a non-tachikoma worktree first.
 - **Long-lived Claude Code session uses stale SKILL.md** — open a fresh Claude session in the repo. Bash loop and rendered prompt are unaffected (already on disk).
 - **`.tachikoma/base_branch` missing** — Phase 6 falls back to asking which branch to merge into. Happens for worktrees scaffolded by an old version of this skill.
+- **Queue drain: item cap hit** — queue drain auto-retries once at half the cap. Second cap = failure, appends `## Queue Failures` to the work-request file, bumps `failure_count`. Two failures → `needs-triage`.
+- **Queue drain: merge conflict in Phase 6** — aborts merge, pushes branch as a draft PR, logs failure, moves to next item. Work-request gets a `## Queue Failures` entry with the conflicting files.
+- **macOS sleeps mid-queue-drain** — use `/tachikoma queue --caffeinated` (or `-C`); each item's launch is wrapped with `caffeinate -d`.
 
 ## Hacking on tachikoma itself
 
@@ -128,6 +132,7 @@ Symlink points at live working tree — edits to `~/projects/personal-nix/skills
 - **No concurrent-human protection inside a worktree.** The per-worktree lockfile only prevents two tachikoma loops in the same worktree, not a human editing files there while tachikoma runs.
 - **Feedback-loop timeout unset.** A pathological test command can hang an iteration; user kills the loop manually.
 - **No cross-repo discovery.** `/tachikoma status` only sees worktrees of the current repo; cross-repo escape hatch is `pgrep -f tachikoma.sh`.
+- **`--caffeinated` is macOS-only.** The flag wraps launches with `caffeinate -d`, a macOS utility. On Linux the flag is silently ignored (caffeinate doesn't exist). Use the OS-appropriate equivalent (`systemd-inhibit`, etc.) manually if needed.
 
 ## References
 

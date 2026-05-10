@@ -1,6 +1,6 @@
 ---
 name: tachikoma
-description: Autonomous AI coding loop. Interviews for a goal, generates a PRD (local JSON, GitHub greenfield, or existing GitHub issue), launches a capped `claude -p` loop in its own git worktree, then walks you through squash-merge / PR / issue-close. Multiple tachikomas can run concurrently on the same codebase — each in its own sibling worktree. Survives interruption (resumable from disk state). Triggers — `/tachikoma`, `/tachikoma --remote`, `/tachikoma --issue <ref>`, `/tachikoma 138` or `/tachikoma #138` (shorthand for `--issue 138`), `/tachikoma done`, `/tachikoma resume`, `/tachikoma status` (alias `/tachikoma t`), `/tachikoma stop`, `/tachikoma queue` (drain the work-request queue), or any natural-language request to start, check on, recover, or wrap up a Tachikoma run ("kick off Tachikoma on issue #138", "AFK this backlog", "check the tachikoma status", "did tachikoma finish", "resume the tachikoma loop", "drain the queue", "work through my queue"). For methodology, see Matt Pocock's aihero.dev article and the Tachikoma SOP.
+description: Autonomous AI coding loop. Interviews for a goal, generates a PRD (local JSON, GitHub greenfield, or existing GitHub issue), launches a capped `claude -p` loop in its own git worktree, then walks you through squash-merge / PR / issue-close. Multiple tachikomas can run concurrently on the same codebase — each in its own sibling worktree. Survives interruption (resumable from disk state). Triggers — `/tachikoma`, `/tachikoma --remote`, `/tachikoma --issue <ref>`, `/tachikoma 138` or `/tachikoma #138` (shorthand for `--issue 138`), `/tachikoma done`, `/tachikoma resume`, `/tachikoma status` (alias `/tachikoma t`), `/tachikoma stop`, `/tachikoma queue` (drain the work-request queue; add `--caffeinated` / `-C` to prevent macOS sleep during long overnight runs), or any natural-language request to start, check on, recover, or wrap up a Tachikoma run ("kick off Tachikoma on issue #138", "AFK this backlog", "check the tachikoma status", "did tachikoma finish", "resume the tachikoma loop", "drain the queue", "work through my queue", "run the queue caffeinated"). For methodology, see Matt Pocock's aihero.dev article and Jeffrey Huntley's Tachikoma Wiggum SOP.
 ---
 
 # Tachikoma
@@ -35,7 +35,7 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 | `/tachikoma resume` (optionally `<slug>`) | Re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. Auto-offered when `/tachikoma` (no args) is run with recoverable state. |
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all tachikoma worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a tachikoma worktree. Picker if >1 running. `--all` halts every running tachikoma in the repo. |
-| `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full Phases 1–6 per item, batch preferences set once up front. With `<slug>`: run a single specific queue item. |
+| `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full Phases 1–6 per item, batch preferences set once up front. With `<slug>`: run a single specific queue item. With `--caffeinated` (alias `-C`): prevent macOS sleep for the entire session by wrapping each item's launch with `caffeinate -d`. |
 
 `--remote` and `--issue <ref>` are **fast-paths**, not requirements — bare `/tachikoma` collects the same answers via two grill questions in Phase 1 (existing issue? then, if not, local-or-remote?). Use the flags when you already know the mode and want to skip those questions; either flow lands in the same Phase 2/3 logic.
 
@@ -527,7 +527,9 @@ For `--all`: send SIGTERM to all in parallel; wait up to 60s for all; SIGKILL st
 
 ## Subcommand: `/tachikoma queue` (queue-drain mode)
 
-Sequentially drains the work-request queue, running a full tachikoma lifecycle (Phases 1–6) per item. Designed for long unattended sessions with `caffeinate -d`. Each item gets its own worktree, branch, and PR. Built to keep moving — failures are logged and skipped, never block the queue.
+Sequentially drains the work-request queue, running a full tachikoma lifecycle (Phases 1–6) per item. Designed for long unattended sessions. Each item gets its own worktree, branch, and PR. Built to keep moving — failures are logged and skipped, never block the queue.
+
+**`--caffeinated` flag (alias `-C`):** When passed, prevents macOS from sleeping during the drain by wrapping each item's `--once` launch with `caffeinate -d`. Recommended for AFK overnight runs. Can also be set interactively via the batch preferences question (see Step 1). Without this flag the system may sleep mid-drain and stall the loop.
 
 **Work-request directory:** `~/projects/personal-nix/wiki/work-requests/*.md`
 
@@ -590,7 +592,9 @@ Before anything else, scan for interrupted state from a prior session:
    Iteration cap [10]:
    Auto-open PRs? [yes]:
    Auto-clean worktrees? [yes]:
+   Keep system awake (caffeinate -d)? [yes]:
    ```
+   The caffeinate preference is pre-answered `yes` if `--caffeinated` / `-C` was passed on the command line; otherwise the user chooses interactively. Record the answer as `caffeinated: true|false` for use in Step 2f.
 
 4. Confirm before entering the loop. Accept a plain enter/yes, or a space-separated list of indices/slugs to exclude:
    ```
@@ -630,6 +634,15 @@ For well-structured bodies, show the extracted fields and confirm in one pass.
 **e. `cd` to `target_repo`.** Run Phases 3–4 (worktree creation + prompt review) using the extracted fields. The target_repo's current HEAD is the base branch.
 
 **f. Phase 5 — launch `--once` (foreground).** Stream the iteration output directly. Queue drain is the session driver; `--once` keeps items sequential and output readable.
+
+If `caffeinated=true`, wrap the launch to prevent macOS sleep:
+```bash
+caffeinate -d bash -c "cd <WORKTREE_PATH> && .tachikoma/tachikoma.sh --once"
+```
+Otherwise launch normally:
+```bash
+cd <WORKTREE_PATH> && .tachikoma/tachikoma.sh --once
+```
 
 **g. Transition banner after tachikoma output ends:**
 ```
@@ -761,6 +774,7 @@ Write `.last-queue-run.md` using the identical content so it's readable both in 
 
 - **Strictly sequential** — one tachikoma at a time, no concurrent launches. Prevents branch conflicts when multiple items target the same repo.
 - **`--once` mode only** — not `--afk`. Queue drain is the session driver. If an item is too large for one `--once` iteration, tachikoma blocker-exits and failure handling takes over.
+- **`--caffeinated` / `-C`** — pass this flag (or answer yes to the batch preference) for long overnight runs. Each item's launch is wrapped with `caffeinate -d` to prevent macOS from sleeping between iterations.
 - Items targeting different repos could theoretically run in parallel but queue drain doesn't — too much session-state complexity for v1.
 - The queue file is the durable state. `grabbed` = in-progress; Step 0 recovery handles crashes.
 
@@ -768,7 +782,7 @@ Write `.last-queue-run.md` using the identical content so it's readable both in 
 
 - [tachikoma.sh.tmpl](tachikoma.sh.tmpl) — the bash loop. Placeholders: `{{ALLOWED_TOOLS}}`, `{{SENTINEL}}`, `{{REPO_PATH}}`.
 - [prompt.md.tmpl](prompt.md.tmpl) — the per-iteration prompt. Placeholders: `{{GOAL}}`, `{{QUALITY_BAR_PARAGRAPH}}`, `{{FILES_IN_SCOPE}}`, `{{FILES_OUT_OF_SCOPE}}`, `{{STOP_CONDITION}}`, `{{TASK_SOURCE_BLOCK}}`, `{{TYPECHECK_CMD}}`, `{{TEST_CMD}}`, `{{LINT_CMD}}`, `{{COMMIT_INSTRUCTIONS}}`, `{{COMPLETION_INSTRUCTIONS}}`.
-- [AGENT-BRIEF.tmpl](AGENT-BRIEF.tmpl) — remote-mode agent brief comment.
+- [AGENT-BRIEF.tmpl](AGENT-BRIEF.tmpl) — remote-mode agent brief comment, posted as a GitHub issue comment after `to-issues` promotes child issues. Placeholders: `{{CATEGORY}}`, `{{SUMMARY}}`, `{{CURRENT_BEHAVIOR}}`, `{{DESIRED_BEHAVIOR}}`, `{{KEY_INTERFACES}}`, `{{ACCEPTANCE_CRITERIA}}`, `{{OUT_OF_SCOPE}}`, `{{QUALITY_BAR}}`. Fill from grill answers + issue body content. Used in both `--remote` and `--issue` modes.
 
 ## Rendering `{{ALLOWED_TOOLS}}` (required, exact format)
 

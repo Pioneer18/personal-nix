@@ -1,13 +1,17 @@
 ---
 name: work-queue
-description: Manage the personal work-request queue at `~/projects/personal-nix/wiki/work-requests/`. Create, list, grab, and mark items done. Triggers — `/work-queue`, `/work-queue list`, `/work-queue add`, `/work-queue add <target-repo>`, `/work-queue grab`, `/work-queue grab <slug>`, `/work-queue done <slug>`, or any natural-language request like "what's queued?", "add a work request", "create a work request", "start the next work request", "grab the next one for tachikoma", "mark this work request done".
+description: Manage the personal work-request queue at `~/projects/personal-nix/wiki/work-requests/`. Create, list, grab, and mark items done. Items are consumed either one-at-a-time (grab → seed tachikoma grill → done) or in batch via `/tachikoma queue`, which runs a full tachikoma lifecycle per item and auto-marks them done on success. Triggers — `/work-queue`, `/work-queue list`, `/work-queue add`, `/work-queue add <target-repo>`, `/work-queue grab`, `/work-queue grab <slug>`, `/work-queue done <slug>`, or any natural-language request like "what's queued?", "add a work request", "create a work request", "start the next work request", "grab the next one for tachikoma", "mark this work request done".
 ---
 
 # Work Queue
 
 Thin manager for `~/projects/personal-nix/wiki/work-requests/`. Lists open items, walks you into a `/tachikoma` launch with the body pre-loaded, tracks lifecycle (`open` → `grabbed` → `done`, with `needs-triage` as a quarantine state for repeatedly-failing items).
 
-This skill does NOT launch tachikoma itself — Claude Code skills can't programmatically invoke other skills. The skill's job is queue-state management + seeding the next conversation turn so you only have to type `/tachikoma` and paste the seed.
+This skill does NOT launch tachikoma itself — Claude Code skills can't programmatically invoke other skills. The skill's job is queue-state management + seeding the next conversation turn.
+
+**Two ways to consume the queue:**
+- **Manual (one item):** `/work-queue grab` → seed the grill → `/tachikoma` in the target repo → `/work-queue done <slug>` after merge.
+- **Batch drain:** `/tachikoma queue` runs a full Phases 1–6 tachikoma lifecycle for each open+ready item sequentially, and auto-marks items `done` on successful completion. Add `--caffeinated` / `-C` to prevent macOS sleep during long overnight runs.
 
 ## Invocation
 
