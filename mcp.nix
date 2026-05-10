@@ -65,6 +65,17 @@
       # Lets Claude script Mail, Calendar, Music, Safari, Finder, etc.
       register_mcp applescript -- npx -y @peakmojo/applescript-mcp
 
+      # Ralph — local MCP for ralph_status and ralph_dispatch.
+      # Deps are pre-installed into mcps/ralph-mcp/node_modules at build time.
+      RALPH_MCP_DIR="$HOME/projects/personal-nix/mcps/ralph-mcp"
+      if [ -d "$RALPH_MCP_DIR" ]; then
+        (cd "$RALPH_MCP_DIR" && npm install --quiet 2>/dev/null) || true
+        register_mcp ralph -- \
+          node --experimental-strip-types "$RALPH_MCP_DIR/index.ts"
+      else
+        echo "personal-nix: ralph-mcp dir not found, skipping"
+      fi
+
       # Postgres — official server. Connection string is a placeholder;
       # update if you want a real default DB. Per-project DBs are usually
       # better handled with a project-scoped MCP entry instead.

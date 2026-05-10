@@ -1,6 +1,6 @@
 ---
 name: work-queue
-description: Manage the personal work-request queue at `~/projects/personal-nix/wiki/work-requests/`. List queued items, grab the next open one and prep it for a ralph launch, mark items done after merge. Triggers — `/work-queue`, `/work-queue list`, `/work-queue grab`, `/work-queue grab <slug>`, `/work-queue done <slug>`, or any natural-language request like "what's queued?", "start the next work request", "grab the next one for ralph", "mark this work request done".
+description: Manage the personal work-request queue at `~/projects/personal-nix/wiki/work-requests/`. Create, list, grab, and mark items done. Triggers — `/work-queue`, `/work-queue list`, `/work-queue add`, `/work-queue add <target-repo>`, `/work-queue grab`, `/work-queue grab <slug>`, `/work-queue done <slug>`, or any natural-language request like "what's queued?", "add a work request", "create a work request", "start the next work request", "grab the next one for ralph", "mark this work request done".
 ---
 
 # Work Queue
@@ -15,11 +15,59 @@ This skill does NOT launch ralph itself — Claude Code skills can't programmati
 |---|---|
 | `/work-queue` (no args) | Equivalent to `/work-queue list`. |
 | `/work-queue list` | Show all entries grouped by status. Flag readiness issues inline. |
+| `/work-queue add` | Grill the user for a new work item, then write it as a structured work-request file. |
+| `/work-queue add <target-repo>` | Same but skip the repo question. |
 | `/work-queue grab` | Pick the next open + ready entry; if multiple, picker. Bumps `status: grabbed`. Prints the ralph seed block. |
 | `/work-queue grab <slug>` | Grab a specific slug (substring match against filename). |
 | `/work-queue done <slug>` | Flip `status: grabbed` → `done`. Bumps `last_updated`. |
 
 `<slug>` matches by substring against `wiki/work-requests/*.md` filenames. Refuse if no match or ambiguous; list candidates.
+
+## add flow
+
+**Purpose:** capture a new work item from the user and store it as a well-formed, ralph-ready work-request file. Uses a relentless one-at-a-time grill to ensure every required field is specific, measurable, and unambiguous.
+
+**Step 1 — Target repo**
+
+If `<target-repo>` was not passed on the command line, ask for it. Expand `~`, verify the path exists on disk — refuse if it doesn't.
+
+**Step 2 — Explore the repo**
+
+Before asking any grill questions, read the target repo to gather context:
+- Check for `package.json`, `Makefile`, `justfile`, `pyproject.toml`, etc. to auto-detect available test/lint/typecheck commands.
+- Note key directories and file patterns to inform scope recommendations.
+- Do this silently — don't narrate the exploration. Use findings to pre-fill recommended answers in the grill.
+
+**Step 3 — Grill the user (one question at a time)**
+
+Interview the user relentlessly until all required fields are resolved. Walk through each field in order. For each question, provide a concrete recommended answer (derived from exploration and what the user has said) before asking. Only move to the next field once the current one is answered. Do not ask multiple questions at once.
+
+Fields to resolve, in order:
+
+1. **Slug** — short kebab-case filename (e.g. `fix-vital-age`, `refactor-auth-middleware`). Recommend one based on the task description. Refuse if a file with that name already exists in `wiki/work-requests/`.
+2. **Title** — human-readable title for the H1 in the file. Recommend title-cased slug.
+3. **Description** — one-sentence summary of the work (optional but encouraged). Recommend based on what the user has described so far.
+4. **Goal** — the "Ralph is done when…" statement. Must be specific and end-state-focused. Push back on vague goals like "improve the code" — keep grilling until it's concrete.
+5. **Files in scope** — globs or paths ralph may read and modify. Recommend based on repo exploration.
+6. **Files out of scope** — globs or paths ralph must not touch. Recommend obvious exclusions (e.g. lock files, generated assets, unrelated modules).
+7. **Stop condition** — concrete acceptance criteria (readable as a checklist). Must be independently verifiable without running the app. Recommend based on goal.
+8. **Feedback loops** — commands to verify correctness: typecheck, tests, lint. Recommend commands discovered from repo exploration (e.g. `npx tsc --noEmit`, `npm test`). Confirm with user before accepting.
+9. **Quality bar** — `prototype`, `production`, or `library`. Recommend based on the target repo and task nature. Explain the tradeoff if the user is unsure: prototype = fast+rough, production = correct+polished, library = API stability matters.
+
+**Step 4 — Write the file**
+
+Once all fields are resolved, write `~/projects/personal-nix/wiki/work-requests/<slug>.md` using the template at `skills/work-queue/work-request.tmpl`. Substitute all `{{PLACEHOLDER}}` values. Set `status: open` and `last_updated` to today's ISO date.
+
+**Step 5 — Confirm**
+
+```
+Created: wiki/work-requests/<slug>.md
+  status:      open
+  target:      <target_repo>
+  quality bar: <quality_bar>
+
+Run `/work-queue grab <slug>` to prep it for ralph, or `/work-queue list` to see the queue.
+```
 
 ## list flow
 
@@ -90,8 +138,9 @@ This skill does NOT launch ralph itself — Claude Code skills can't programmati
 
 - **`wiki/work-requests/` missing** — tell user the personal-nix repo may be out of sync; do not auto-create. (The wiki skill is supposed to maintain this.)
 - **Frontmatter malformed in an entry** — skip with a warning; show which file. Don't crash the command.
-- **`target_repo` path doesn't exist on disk** — mark as not-ready in `list`; refuse to grab.
-- **Slug ambiguous** — list candidates, refuse to act. User retries with a more specific slug.
+- **`target_repo` path doesn't exist on disk** — mark as not-ready in `list`; refuse to grab or add.
+- **Slug already exists (add)** — refuse and show the existing file. User picks a different slug or edits the existing one.
+- **Slug ambiguous (grab/done)** — list candidates, refuse to act. User retries with a more specific slug.
 - **No open + ready entries** — empty queue. Suggest `/work-queue list` to see if any are stuck on readiness.
 
 ## Privacy

@@ -1,6 +1,6 @@
 ---
 name: ralph
-description: Autonomous AI coding loop. Interviews for a goal, generates a PRD (local JSON, GitHub greenfield, or existing GitHub issue), launches a capped `claude -p` loop in its own git worktree, then walks you through squash-merge / PR / issue-close. Multiple ralphs can run concurrently on the same codebase — each in its own sibling worktree. Survives interruption (resumable from disk state). Triggers — `/ralph`, `/ralph --remote`, `/ralph --issue <ref>`, `/ralph done`, `/ralph resume`, `/ralph status` (alias `/ralph t`), `/ralph stop`, or any natural-language request to start, check on, recover, or wrap up a Ralph run ("kick off Ralph on issue #138", "AFK this backlog", "check the ralph status", "did ralph finish", "resume the ralph loop"). For methodology, see Matt Pocock's aihero.dev article and the Ralph SOP.
+description: Autonomous AI coding loop. Interviews for a goal, generates a PRD (local JSON, GitHub greenfield, or existing GitHub issue), launches a capped `claude -p` loop in its own git worktree, then walks you through squash-merge / PR / issue-close. Multiple ralphs can run concurrently on the same codebase — each in its own sibling worktree. Survives interruption (resumable from disk state). Triggers — `/ralph`, `/ralph --remote`, `/ralph --issue <ref>`, `/ralph done`, `/ralph resume`, `/ralph status` (alias `/ralph t`), `/ralph stop`, `/ralph queue` (drain the work-request queue), or any natural-language request to start, check on, recover, or wrap up a Ralph run ("kick off Ralph on issue #138", "AFK this backlog", "check the ralph status", "did ralph finish", "resume the ralph loop", "drain the queue", "work through my queue"). For methodology, see Matt Pocock's aihero.dev article and the Ralph SOP.
 ---
 
 # Ralph
@@ -34,6 +34,7 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 | `/ralph resume` (optionally `<slug>`) | Re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. Auto-offered when `/ralph` (no args) is run with recoverable state. |
 | `/ralph status` (alias `/ralph t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all ralph worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
 | `/ralph stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a ralph worktree. Picker if >1 running. `--all` halts every running ralph in the repo. |
+| `/ralph queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full Phases 1–6 per item, batch preferences set once up front. With `<slug>`: run a single specific queue item. |
 
 `<ref>` accepts: `#138`, `138`, or `org/repo#138`. The `org/repo` form must match the cwd repo's `nameWithOwner`; if not, refuse and tell the user to `cd` first.
 
@@ -486,6 +487,245 @@ Keep one row per loop, ≤80 chars wide. Don't print log tails or progress notes
 2. Wait up to 60s for graceful exit; if still alive, `kill -KILL <PID>` and warn user about possibly-dirty worktree (which they'd see in Phase R).
 
 For `--all`: send SIGTERM to all in parallel; wait up to 60s for all; SIGKILL stragglers.
+
+## Subcommand: `/ralph queue` (queue-drain mode)
+
+Sequentially drains the work-request queue, running a full ralph lifecycle (Phases 1–6) per item. Designed for long unattended sessions with `caffeinate -d`. Each item gets its own worktree, branch, and PR. Built to keep moving — failures are logged and skipped, never block the queue.
+
+**Work-request directory:** `~/projects/personal-nix/wiki/work-requests/*.md`
+
+**Frontmatter fields used by queue drain:**
+
+| Field | Purpose |
+|---|---|
+| `status` | `open` → `grabbed` → `done` → `needs-triage` |
+| `target_repo` | Repo path, expanded `~` |
+| `failure_count` | Integer. Bumped on each failure. Missing = 0. |
+| `last_updated` | ISO date, bumped on every state change |
+
+**Readiness check** (open+ready):
+- `status: open`
+- `target_repo` present and path exists on disk
+- Body length > 50 chars
+- `failure_count` < 2 (items with ≥ 2 failures are `needs-triage`, not grabbed)
+
+### Step 0 — Session recovery (check first, before pre-flight)
+
+Before anything else, scan for interrupted state from a prior session:
+
+1. Glob all work-requests for `status: grabbed`.
+2. For each grabbed item, check for a matching ralph worktree via `git worktree list --porcelain` (branch matching `ralph/*<slug>*`).
+3. If any grabbed items exist, print a compact interrupted-state summary:
+   ```
+   ⚠  Interrupted session detected — 1 item was in progress:
+        fix-vital-age  (grabbed, worktree exists, outcome=unknown)
+
+   Resume interrupted items first, then continue queue? [Y/n]
+   ```
+4. On yes (default): handle each interrupted item first using the failure-handling rules in Step 1f before starting any new items. On no: skip interrupted items and start fresh (they remain grabbed — user owns cleanup).
+5. If a grabbed item has no matching worktree (crash before scaffold): reset `status: open` automatically and include it in the normal pre-flight queue.
+
+### Step 1 — Pre-flight
+
+1. Glob and parse all work-requests. Distinguish two empty states:
+   - **Truly empty** — no `.md` files (excluding `.gitkeep`): `"No work requests found. Create one with /work-queue add."`
+   - **Items exist but none ready** — show each blocking reason inline: `"2 items exist but none are ready:"`
+     ```
+       fix-vital-age           — target_repo ~/projects/platform not found on disk
+       refactor-auth-middleware — body too short (< 50 chars)
+     ```
+   - Exit in both cases.
+
+2. Show all candidates with indices. Include `needs-triage` items visibly but mark them excluded:
+   ```
+   Queue drain — 3 items to run  (1 excluded)
+
+     [1] fix-vital-age            → ~/projects/platform
+     [2] refactor-auth-middleware  → ~/projects/platform
+     [3] add-sleep-chart           → ~/projects/healthbite
+     [–] wire-up-feature-flags     → ~/projects/platform    ⚠ needs-triage (2 failures)
+   ```
+   With `/ralph queue <slug>`: filter to that one item. Refuse on no match, ambiguity, or `needs-triage` status (tell user to reset it manually first).
+
+3. Ask batch preferences **once**, showing defaults inline so enter accepts:
+   ```
+   Quality bar [production]:
+   Iteration cap [10]:
+   Auto-open PRs? [yes]:
+   Auto-clean worktrees? [yes]:
+   ```
+
+4. Confirm before entering the loop. Accept a plain enter/yes, or a space-separated list of indices/slugs to exclude:
+   ```
+   Proceed with 3 items? (enter to confirm, or type indices/slugs to exclude, e.g. "2 auth-middleware"):
+   ```
+   Strip excluded items from the run list before continuing.
+
+### Step 2 — Item loop (sequential, foreground)
+
+For each item in queue order:
+
+**a. Print item header:**
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[1/3] fix-vital-age → ~/projects/platform
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**b. Extract grill fields from the work-request body.** Look for these sections in order of precedence (explicit header > first paragraph):
+
+| Field | Look for |
+|---|---|
+| Goal | `## Goal`, `## Objective`, or first non-heading paragraph |
+| Files in scope | `## Files in Scope`, `files_in_scope:` in frontmatter |
+| Files out of scope | `## Files out of Scope`, `files_out_of_scope:` in frontmatter |
+| Stop condition | `## Stop Condition`, `## Acceptance Criteria`, `## Done When` |
+| Feedback loops | `## Feedback Loops`, `## Tests`, `## Verification` |
+
+**If the body is freeform prose with no recognizable headers:** show the raw body and ask the user to identify each field interactively before proceeding (abbreviated grill — only missing fields). At minimum, goal + stop condition must be resolved before launch.
+
+For well-structured bodies, show the extracted fields and confirm in one pass.
+
+**c. Ask "Launch this item?"** User can type "skip" to move to the next item. Do NOT update the queue file until the user confirms launch — if the user aborts or skips at this point, `status` stays `open`.
+
+**d. Update the queue file:** `status: open` → `status: grabbed`, bump `last_updated` to today. This is the commit point — anything after this that exits unexpectedly leaves the item grabbed and triggers Step 0 recovery on the next run.
+
+**e. `cd` to `target_repo`.** Run Phases 3–4 (worktree creation + prompt review) using the extracted fields. The target_repo's current HEAD is the base branch.
+
+**f. Phase 5 — launch `--once` (foreground).** Stream the iteration output directly. Queue drain is the session driver; `--once` keeps items sequential and output readable.
+
+**g. Transition banner after ralph output ends:**
+```
+━━━ Queue Drain — Phase 6: fix-vital-age ━━━━━━━━━━━━━━
+```
+This separates ralph's raw output from queue drain's Phase 6 actions in the scrollback.
+
+**h. Phase 6 (abbreviated, uses batch preferences):**
+- Show diff stat verbatim.
+- Squash-merge: auto-approve unless conflicts arise (see failure handling below for conflict path).
+- Worktree + branch cleanup: if `auto-clean=yes`, skip the interactive prompt and clean up automatically.
+- PR: if `auto-open=yes`, derive title/body from goal + slug and open without review (user can edit on GitHub). Print the PR URL.
+- Issue close: skip for local-mode items. For `--issue`-sourced items, apply Phase 6 Step 7 smart default.
+
+**i. Mark item `status: done`**, bump `last_updated`, bump nothing on `failure_count` (success resets nothing — count is cumulative across all time).
+
+**j. Print completion line:**
+```
+✓ [1/3] fix-vital-age — DONE  (PR #142 opened, worktree cleaned)
+```
+
+### Failure handling (keep the queue moving)
+
+The goal is to skip and continue — never block the queue waiting for human input unless human input is genuinely required (e.g. merge conflicts that can't be resolved automatically).
+
+#### Outcome: `cap` (hit iteration limit)
+
+```
+⏱ [1/3] fix-vital-age — CAP HIT (10/10 iterations)
+         Auto-resuming once at reduced cap (5 iterations)...
+```
+
+Re-launch `--once` with `floor(original_cap / 2)`. If it caps again:
+- Treat as a failure (same path as `error` below).
+- Do NOT auto-resume a third time.
+
+#### Outcome: `error`, `stopped`, or `blocker-exit`
+
+Skip immediately. No retry. Proceed to the failure-log path below, then move to the next item.
+
+`stopped` = deliberate kill, don't retry. `blocker-exit` = ralph self-assessed as stuck, human input needed.
+
+#### On any failure (after exhausting retries):
+
+1. **Partial commits check:** run `git -C <WORKTREE_PATH> log <RALPH_BRANCH> ^<BASE_BRANCH> --oneline`. If commits exist beyond the scaffold commit:
+   - Push the branch: `git -C <WORKTREE_PATH> push -u origin <RALPH_BRANCH>`
+   - Open a draft PR: `gh pr create --draft --title "[partial] <goal-slug>" --body "Partial work from queue drain. See work-request failure log for context."`
+   - Record the draft PR URL for the failure log.
+   - Clean up the worktree: `git -C <MAIN_REPO> worktree remove --force <WORKTREE_PATH>` (branch stays — it's the draft PR's head).
+   - If no commits beyond scaffold: clean up worktree + branch entirely.
+
+2. **Write failure log entry** to the work-request file. Append a `## Queue Failures` section (or add an entry to an existing one):
+   ```markdown
+   ## Queue Failures
+
+   ### 2026-05-10 — outcome: error
+
+   **Last progress note:**
+   <last entry from .ralph/progress.txt>
+
+   **Log tail:**
+   <last 15 lines of .ralph/run.log>
+
+   **Draft PR:** https://github.com/... (if partial commits exist)
+
+   **What to try next:**
+   <synthesized suggestion — read the progress note + log tail and derive a concrete,
+   actionable recommendation. E.g. "tsc failed on src/utils/sleepNormalizer.ts at line 42:
+   cannot find name 'mergeSleepIntervals'. Check the import path — the function was moved
+   to sleepNormalizer/merge.ts in the last refactor.">
+   ```
+
+3. **Bump `failure_count`** in frontmatter (missing = 0, treat as 0 before bumping).
+
+4. **Status transition:**
+   - `failure_count` after bump < 2: reset `status: grabbed` → `status: open`
+   - `failure_count` after bump ≥ 2: set `status: needs-triage` (excluded from all future queue drains until manually reset)
+
+5. **Print failure line:**
+   ```
+   ✗ [1/3] fix-vital-age — FAILED (error · draft PR opened · needs-triage after 2 failures)
+   ```
+
+#### Phase 6 merge conflict
+
+If squash-merge exits with a conflict:
+- Abort the merge: `git -C <BASE_WT> merge --abort`
+- Push the ralph branch as-is: `git -C <WORKTREE_PATH> push -u origin <RALPH_BRANCH>`
+- Open a draft PR with the conflict noted in the body.
+- Write a failure log entry (outcome: `phase6-conflict`) with the conflicting files listed.
+- Bump `failure_count`, apply the same status transition as above.
+- Clean up the worktree.
+- Continue to the next item.
+
+#### User aborts before ralph launches
+
+If the user sends Ctrl-C or types "abort" **after** `status: grabbed` was written but **before** the worktree is created:
+- Reset `status: grabbed` → `status: open` immediately.
+- Do not bump `failure_count` (no attempt was made).
+- Exit queue drain cleanly.
+
+If the abort happens **after** the worktree is created but before ralph launches:
+- Clean up the worktree + branch.
+- Reset `status: grabbed` → `status: open`.
+- Do not bump `failure_count`.
+- Exit queue drain cleanly.
+
+### Step 3 — Session summary
+
+After all items are processed, print the summary and write it to `~/projects/personal-nix/wiki/work-requests/.last-queue-run.md` (same content, for morning review if the terminal is gone).
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Queue drain complete — 2026-05-10
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓  fix-vital-age            PR #142  ~/projects/platform
+✓  add-sleep-chart           PR #143  ~/projects/healthbite
+✗  refactor-auth-middleware  FAILED (error · draft PR #144 · 1/2 failures)
+⚠  wire-up-feature-flags     NEEDS TRIAGE (2/2 failures — excluded from future runs)
+
+PRs opened:  #142, #143, #144 (draft)
+Needs attention: 1 failed item · 1 needs-triage item
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+Write `.last-queue-run.md` using the identical content so it's readable both in terminal and in a text editor.
+
+### Constraints
+
+- **Strictly sequential** — one ralph at a time, no concurrent launches. Prevents branch conflicts when multiple items target the same repo.
+- **`--once` mode only** — not `--afk`. Queue drain is the session driver. If an item is too large for one `--once` iteration, ralph blocker-exits and failure handling takes over.
+- Items targeting different repos could theoretically run in parallel but queue drain doesn't — too much session-state complexity for v1.
+- The queue file is the durable state. `grabbed` = in-progress; Step 0 recovery handles crashes.
 
 ## Templates in this skill
 
