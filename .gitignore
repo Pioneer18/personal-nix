@@ -14,3 +14,4 @@ result-*
 # Local overrides (not currently used, but reserved)
 local.nix
 *.local.nix
+.ralph/

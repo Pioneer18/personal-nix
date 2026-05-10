@@ -62,7 +62,14 @@ cleanup() {
 
 stop_handler() {
   OUTCOME="stopped"
-  echo "[ralph] received SIGTERM at iter $ITER, exiting after current iteration." >&2
+  {
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  ⏹ STOPPED — received signal at iter $ITER"
+    echo "  Run /ralph resume to continue, or /ralph done to review."
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+  } | tee -a "$LOG_FILE" >&2
   trap - TERM
   cleanup
   printf '\a' >&2 || true
@@ -94,8 +101,17 @@ case "$BRANCH" in
     ;;
 esac
 
+{
+  echo ""
+  echo "═══════════════════════════════════════════════════════════════"
+  echo "  🚀 starting — repo: $(basename "$REPO") · branch: $BRANCH"
+  echo "  cap: $MAX_ITER iter(s) · pid: $$"
+  echo "═══════════════════════════════════════════════════════════════"
+  echo ""
+} | tee "$LOG_FILE"
+
 for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
-  echo "==================== iter $ITER / $MAX_ITER ====================" | tee -a "$LOG_FILE"
+  echo "─── iter $ITER / $MAX_ITER ─────────────────────────────────────" | tee -a "$LOG_FILE"
 
   # Bail if working tree is dirty at iteration start — previous iteration
   # left something half-done. `git status --porcelain` is unborn-HEAD safe.
@@ -116,7 +132,14 @@ for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
   set -e
 
   if [ $RC -ne 0 ]; then
-    echo "[ralph] claude exited with code $RC, aborting loop." | tee -a "$LOG_FILE" >&2
+    {
+      echo ""
+      echo "═══════════════════════════════════════════════════════════════"
+      echo "  ❌ ERROR — claude exited with code $RC at iter $ITER"
+      echo "  Run /ralph resume to retry, or /ralph done to review."
+      echo "═══════════════════════════════════════════════════════════════"
+      echo ""
+    } | tee -a "$LOG_FILE" >&2
     OUTCOME="error"
     exit $RC
   fi
@@ -125,7 +148,7 @@ for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
     {
       echo ""
       echo "═══════════════════════════════════════════════════════════════"
-      echo "  🏁  RALPH COMPLETE"
+      echo "  🏁 RALPH COMPLETE"
       echo "  $ITER iteration(s) · branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
       echo "  Run /ralph done to review and merge."
       echo "═══════════════════════════════════════════════════════════════"
@@ -134,13 +157,23 @@ for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
     OUTCOME="complete"
     exit 0
   fi
+
+  LAST_LINE="$(tail -n 1 "$PROGRESS_FILE" 2>/dev/null || true)"
+  {
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  ✓ MILESTONE — iter $ITER / $MAX_ITER"
+    echo "  ${LAST_LINE:-(progress.txt empty)}"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+  } | tee -a "$LOG_FILE"
 done
 
 {
   echo ""
   echo "═══════════════════════════════════════════════════════════════"
-  echo "  ⏱  CAP HIT — $MAX_ITER iterations without sentinel"
-  echo "  Run /ralph done to review what got committed, or rm -rf .ralph/ and re-run."
+  echo "  ⏱ CAP HIT — $MAX_ITER iterations without sentinel"
+  echo "  Run /ralph resume to continue, or /ralph done to review what's committed."
   echo "═══════════════════════════════════════════════════════════════"
   echo ""
 } | tee -a "$LOG_FILE"
