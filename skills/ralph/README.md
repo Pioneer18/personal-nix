@@ -15,6 +15,7 @@ Pocock's "Ralph Wiggum" autonomous AI coding loop, adapted to this machine, the 
 | `/ralph --issue <ref>` | Plan + run, **existing-issue mode**. Uses GitHub issue body as the PRD; loop scoped to that one issue. `<ref>` accepts `#138`, `138`, or `org/repo#138`. |
 | `/ralph done` | Phase 6 — interactive post-completion review (squash-merge, branch cleanup, optional PR, optional issue close). Auto-triggered when `/ralph` (no args) is run in a repo with a finished loop. |
 | `/ralph resume` | Phase R — re-launch an interrupted loop, picking up at the next unfinished task. Auto-offered when `/ralph` (no args) is run in a repo with partial state. |
+| `/ralph status` (alias `/ralph t`) | Read-only telemetry: status, current iter, last milestone banner, last progress note, recent log lines. Doesn't interrupt the loop. |
 | `/ralph stop` | SIGTERM running loop in cwd via `.ralph/run.pid`. |
 
 ## File layout
@@ -50,6 +51,9 @@ Reasoning so future-you doesn't relitigate.
 - **Three modes, flagged at invocation.** Local (default) for prototype work, `--remote` for greenfield backlogs (creates the PRD on the tracker), `--issue <ref>` for existing GitHub issues (uses the issue body as PRD, loop scoped to one issue). Same loop logic; only the task-source query and completion check differ.
 - **Phase 6 auto-runs at sentinel.** Bash loop writes `.ralph/outcome=complete` on success. `--once` mode immediately enters Phase 6 (squash-merge → branch cleanup → optional PR → optional issue close → state cleanup, asking at each step). For `--afk` mode, the next `/ralph` invocation detects `outcome=complete` and routes to Phase 6 instead of starting a new run. Eliminates the "now run these 5 git commands manually" friction.
 - **Phase R recovers interrupted runs.** State is fully resumable: `progress.txt` records what's been done, `prd.json` flags `passes: true` per task, the rendered ralph.sh and prompt.md persist. After an interruption (kill, /ralph stop, cap-hit), running `/ralph` again detects partial state and offers Resume / Review / Restart. Resume picks up at the next unfinished task. Hard refusal only on a dirty working tree (which signals a mid-iteration crash).
+- **Milestone banners stream during the run.** Per-iteration `✓ MILESTONE` banner from the agent (with a one-line "what's now true that wasn't"), plus a big `🏁 RALPH COMPLETE` or `⏱ CAP HIT` banner from the bash loop on exit. Both go through `tee` to `.ralph/run.log`, so they're visible whether you're tailing the log or reading via the orchestrator.
+- **`/ralph status` (alias `/ralph t`) is read-only telemetry.** Anytime check-in: PID liveness, current iter, last milestone banner, last progress note, log tail. Doesn't interrupt the loop. Works mid-run, post-completion, or post-interruption — adapts output to current state.
+- **Test-must-exist enforcement, not full TDD.** Per-iteration prompt requires: if you added new behavior, a test must exist that exercises it. Doesn't enforce test-first ordering (TDD overhead isn't worth it for refactors/config/docs). Hits Pocock's "agents skip testing" failure mode without prescribing TDD across the board.
 - **Human-approved issue close in Phase 6 doesn't violate the agents-don't-close-issues convention.** That convention applies to the autonomous AFK loop. Phase 6 is interactive — every step requires your approval — so closing there is just executing your intent.
 - **Always branch to `ralph/<slug>`.** Branches off whatever HEAD is. Never commits to `main`/`master`/etc. Loop also defense-in-depth checks.
 - **No Docker sandbox in v1.** Tool-allowlist via `claude -p --allowed-tools` with constrained `Bash(<bin> *)` globs. Blocks realistic accidents. Layer Docker only if multi-hour overnight loops become routine.
@@ -80,6 +84,8 @@ Reasoning so future-you doesn't relitigate.
 - **Squash-merge → `git branch -d` refuses** — use `-D`. Squash isn't fast-forward, git sees branch as unmerged.
 - **Auth expires mid-AFK** — iterations error out, loop exits, notification fires `outcome=error`. Re-auth, re-run.
 - **Working tree dirty at iteration start** — bash loop bails. Manual cleanup (`git status; git stash`/commit), then re-run.
+- **Long-lived Claude Code session uses stale SKILL.md** — Claude Code reads SKILL.md at skill-invocation time. If you edit SKILL.md while a session is open, then invoke `/ralph` in that session, the orchestrator may use cached/stale instructions (e.g. printing manual git commands instead of entering Phase 6). Fix: open a fresh Claude session in the repo. The bash loop and rendered `.ralph/prompt.md` are not affected — they're written to disk at scaffold time and run from there.
+- **Old loops have no milestone banners** — runs scaffolded before the milestone-banner addition won't have `✓ MILESTONE` blocks in `run.log`. `/ralph status` adapts (shows iteration banners and progress notes instead). Cosmetic only.
 
 ## Hacking on ralph itself
 

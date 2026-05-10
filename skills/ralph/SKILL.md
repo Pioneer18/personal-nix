@@ -1,6 +1,6 @@
 ---
 name: ralph
-description: Run a Ralph Wiggum loop — interview the user for a goal, generate a PRD (local JSON or GitHub issues) or use an existing GitHub issue, then launch a capped bash loop that calls `claude -p` per iteration until the backlog is empty or the cap is hit. Triggers — `/ralph`, `/ralph --remote`, `/ralph --issue <ref>`, `/ralph stop`, or any request to "start a ralph loop", "kick off Ralph", "AFK this backlog", or "ralph issue #N". For background on the methodology, see Matt Pocock's article (aihero.dev) and the Ralph SOP.
+description: Autonomous AI coding loop. Interviews for a goal, generates a PRD (local JSON, GitHub greenfield, or existing GitHub issue), launches a capped `claude -p` loop, then walks you through squash-merge / PR / issue-close. Survives interruption (resumable from disk state). Triggers — `/ralph`, `/ralph --remote`, `/ralph --issue <ref>`, `/ralph done`, `/ralph resume`, `/ralph status` (alias `/ralph t`), `/ralph stop`, or any natural-language request to start, check on, recover, or wrap up a Ralph run ("kick off Ralph on issue #138", "AFK this backlog", "check the ralph status", "did ralph finish", "resume the ralph loop"). For methodology, see Matt Pocock's aihero.dev article and the Ralph SOP.
 ---
 
 # Ralph
@@ -16,6 +16,7 @@ Autonomous AI coding loop. The user provides an end-state; Ralph picks tasks, im
 | `/ralph --issue <ref>` | Plan + run, **existing-issue mode** — uses a GitHub issue body as the PRD; loop scoped to that single issue |
 | `/ralph done` | Manually trigger Phase 6 (post-completion review: squash-merge, branch cleanup, optional PR, optional issue close) for a loop that finished without your interaction. Auto-triggered when `/ralph` is invoked with no args in a repo where `.ralph/outcome` is `complete`. |
 | `/ralph resume` | Re-launch a previously interrupted loop. Agent reads `.ralph/progress.txt` + the PRD and picks up at the next unfinished task. Auto-offered when `/ralph` (no args) is run in a repo with partial state. |
+| `/ralph status` (alias `/ralph t`) | Telemetry check on a running or recently-finished loop. Shows PID liveness, current iter, last milestone banner, last progress note, recent log lines. Read-only — does not interrupt the loop. |
 | `/ralph stop` | SIGTERM the running loop in cwd via `.ralph/run.pid` |
 
 `<ref>` accepts: `#138`, `138`, or `org/repo#138`. The `org/repo` form must match the cwd repo's `nameWithOwner`; if not, refuse and tell the user to `cd` first.
@@ -171,7 +172,13 @@ Launch backgrounded and detached so it survives this session ending:
 ```bash
 nohup .ralph/ralph.sh --afk N > .ralph/run.log 2>&1 & disown
 ```
-Tell the user the PID, the log path, the command to stop it (`/ralph stop` or `kill <PID>`), and that when they come back **just typing `/ralph` (no args) will detect the finished loop and walk them through review/merge/PR**.
+After launch, give the user a compact post-launch message with these four pointers (in this order):
+- **PID**: `<pid>`, branch `<ralph-branch>`, cap `N` iterations, log `.ralph/run.log`
+- **Check in**: `/ralph status` (or `/ralph t`) — read-only telemetry, doesn't interrupt the loop
+- **Stop**: `/ralph stop` or `kill <pid>`
+- **When done**: macOS notification fires; then `/ralph` (no args) auto-routes to Phase 6 for review/merge/PR
+
+Do NOT print manual `git log`/`git merge`/`git branch -D` instructions — Phase 6 handles those.
 
 ## Phase 6: post-completion review
 
@@ -264,6 +271,54 @@ For the **Resume** path:
 For the **Review** path: jump straight to Phase 6, treating the current branch state as the final result.
 
 For the **Restart** path: confirm destructive action ("this will delete `.ralph/` and `plans/prd.json` — the branch stays. OK?"). On confirmation, clean and fall through to a fresh planning grill.
+
+## Subcommand: `/ralph status` (alias `/ralph t`)
+
+Read-only telemetry. Never modifies state. Works whether the loop is running, finished, or interrupted.
+
+**Step 1 — Detect state:**
+- `.ralph/run.pid` exists + `kill -0 <pid>` succeeds → **running**
+- `.ralph/outcome=complete` → **finished, awaiting Phase 6**
+- `.ralph/outcome ∈ {cap, error, stopped}` → **interrupted, awaiting Phase R**
+- No `.ralph/` → tell user no Ralph state in this repo, exit
+
+**Step 2 — Gather:**
+- PID + alive-status
+- Branch (`git rev-parse --abbrev-ref HEAD` if on ralph branch, else parse from log)
+- Cap and iter-progress: scan `.ralph/run.log` for the most recent `==================== iter N / M ====================` line
+- Last milestone banner: scan `.ralph/run.log` for the most recent `✓ MILESTONE` block (5 lines), or `⚠ BLOCKER` block, or the final `🏁 RALPH COMPLETE` / `⏱ CAP HIT` banner if present
+- Last progress note: tail of `.ralph/progress.txt` (most recent `## Iter N` block)
+- Last 15 lines of `.ralph/run.log` for raw context
+
+**Step 3 — Format output** like this:
+
+```
+Ralph telemetry — <ralph-branch>
+─────────────────────────────────────────────────────
+  Status:   <RUNNING / COMPLETE / CAP / ERROR / STOPPED>
+  PID:      <pid> (alive | dead)
+  Iter:     <N> / <M>
+  Mode:     <--once | --afk M>
+
+Last milestone:
+  <copy the milestone banner block verbatim>
+
+Last progress note:
+  <copy the most recent ## Iter N block from progress.txt>
+
+Recent log (last 15 lines):
+  <tail of run.log>
+
+────
+Stop: /ralph stop  ·  Resume on next interaction: /ralph
+```
+
+**Step 4 — Light suggestions** based on state:
+- **Running**: "Loop is healthy. Check back when notification fires, or run `/ralph status` again."
+- **Complete**: "Loop done. Run `/ralph` (no args) to enter Phase 6."
+- **Interrupted**: "Loop ended in `<outcome>`. Run `/ralph` (no args) to see Phase R recovery options."
+
+Keep the whole output under ~40 lines. The user wants a glanceable check-in, not a full debug dump.
 
 ## Subcommand: `/ralph stop`
 

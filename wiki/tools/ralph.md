@@ -25,6 +25,7 @@ Autonomous AFK coding on any git repo. See the [canonical README](../../skills/r
 **Lifecycle subcommands**:
 - `/ralph done` — manually trigger Phase 6
 - `/ralph resume` — manually trigger Phase R
+- `/ralph status` (`/ralph t`) — read-only telemetry on a running/finished loop
 - `/ralph stop` — SIGTERM the running loop
 
 **What's enforced in every iteration**:
@@ -32,3 +33,4 @@ Autonomous AFK coding on any git repo. See the [canonical README](../../skills/r
 - Feedback loops (typecheck/test/lint) must pass before commit
 - Single-feature-per-iteration constraint
 - Append-only `progress.txt`, atomic git commit per task
+- Per-iteration `✓ MILESTONE` banner streamed to `.ralph/run.log` (visible glance progress markers)
