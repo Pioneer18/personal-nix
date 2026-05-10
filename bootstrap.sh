@@ -47,7 +47,9 @@ fi
 step "Checking for personal-nix repo"
 if [ -d "$PERSONAL_DIR" ]; then
   ok "personal-nix present at $PERSONAL_DIR"
-  ( cd "$PERSONAL_DIR" && git pull --ff-only || warn "git pull failed (uncommitted changes?)" )
+  if ! ( cd "$PERSONAL_DIR" && git pull --ff-only ); then
+    warn "git pull failed (uncommitted changes?)"
+  fi
 else
   warn "cloning $PERSONAL_REPO"
   git clone "$PERSONAL_REPO" "$PERSONAL_DIR"

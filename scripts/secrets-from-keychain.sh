@@ -40,6 +40,8 @@ read_keychain "github_token" "GITHUB_TOKEN"
 {
   echo ''
   echo '# Aliases'
+  # SC2016: literal $GITHUB_TOKEN, expanded at source time
+  # shellcheck disable=SC2016
   echo 'export GH_TOKEN="$GITHUB_TOKEN"'
 } >> "$TMP"
 
