@@ -100,10 +100,14 @@ if [ "$NEED_KEYCHAIN_SETUP" = "1" ]; then
 
     1. claude setup-token
        (then copy the token)
-       security add-generic-password -U -s claude_code_oauth -a \$USER -w '<paste-token>'
+       security add-generic-password -A -U -s claude_code_oauth -a \$USER -w '<paste-token>'
 
     2. Get a GitHub PAT (https://github.com/settings/tokens — repo + workflow scopes)
-       security add-generic-password -U -s github_token -a \$USER -w '<paste-pat>'
+       security add-generic-password -A -U -s github_token -a \$USER -w '<paste-pat>'
+
+  IMPORTANT: the -A flag ('allow any application') is required.
+  Without it, macOS Keychain ACLs deny access from the home-manager
+  activation context, even though interactive 'security' calls work.
 
 EOF
   ask "Populate Keychain (or wait for iCloud sync), then continue"

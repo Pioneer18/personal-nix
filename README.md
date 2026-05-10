@@ -39,7 +39,7 @@ Skills under `skills/` are symlinked into `~/.claude/skills/` by the activation 
 | Add a CLI tool | Edit `packages.nix`, run `dev` |
 | Add an MCP server | Edit `mcp.nix`, run `dev` |
 | Add a custom skill | `mkdir skills/<name>`, write `SKILL.md`, run `dev` once to symlink |
-| Update Keychain secret | `security add-generic-password -U -s <name> -a $USER -w '<value>'`, then `dev` to regenerate `~/.secrets` |
+| Update Keychain secret | `security add-generic-password -A -U -s <name> -a $USER -w '<value>'`, then `dev` to regenerate `~/.secrets` (the `-A` is required so the home-manager activation context can read it) |
 | Inspect what's set | `cat ~/.secrets`, `claude mcp list`, `ls ~/.claude/skills/` |
 
 ## What's NOT in this repo
