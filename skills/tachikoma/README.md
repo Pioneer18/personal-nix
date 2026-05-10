@@ -21,6 +21,7 @@ Pocock's "Tachikoma Wiggum" autonomous AI coding loop, adapted to this machine, 
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Read-only telemetry. No args: compact summary table across all tachikoma worktrees in the repo. With slug: drill in. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is a tachikoma worktree. Picker if >1 running. |
 | `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full Phases 1–6 per item. Batch preferences set once up front. With `--caffeinated` / `-C`: wraps each item's launch with `caffeinate -d` to prevent macOS sleep during long overnight runs. |
+| `/tachikoma queue <repo>` | GitHub-sourced queue drain. Fetches all `ready-for-agent AND NOT agent-running` issues from `<repo>` (`org/repo`), auto-creates linked work_requests for any without one, then runs normal queue drain. Fires a macOS HITL notification + terminal summary when no `ready-for-agent` issues remain. |
 
 ## File layout
 
@@ -76,6 +77,9 @@ Reasoning so future-you doesn't relitigate.
 - **Phase 6 merge runs in the base-worktree.** `git -C <base-wt>` does the merge regardless of orchestrator cwd. Refuses if base-worktree dirty. Auto-stash deemed too risky.
 - **Refuse `/tachikoma` from inside an active tachikoma worktree.** Branching off a mid-tachikoma state would inherit half-finished commits. User cd's to main repo or a non-tachikoma worktree first.
 - **No batch fanout in v1.** Three sequential `/tachikoma --issue N` invocations cover the parallelism use case; batch design (shared grill, fan-in status) deferred until pain points emerge.
+- **`agent-running` is the distributed claim signal.** Applied before worktree scaffolding (Phase 2.5), not after. A concurrent Tachikoma filtering `ready-for-agent AND NOT agent-running` won't see a claimed issue. Verified by re-fetching the issue after applying the label — if `agent-running` is absent, another agent claimed it first; skip or exit.
+- **Label lifecycle mirrors work_request state.** Issue-linked runs: `ready-for-agent` → `agent-running` at claim; `agent-running` → `ready-for-review` at Phase 6 completion. Failure reverts to `ready-for-agent` (< 2 failures) or `needs-triage` (≥ 2). Deliberate stop reverts to `ready-for-agent` without bumping `failure_count`.
+- **Work_requests are always the canonical unit.** GitHub issues auto-create linked work_requests in Phase 2 (existing-issue mode) and `/tachikoma queue <repo>` Step 0. They're never skipped — the queue drain always works from a work_request file, even when sourced from GitHub.
 - **Three modes, picked in the grill (with fast-path flags).** Local for prototype work, remote-greenfield for new backlogs, existing-issue for a specific GitHub issue. Phase 1 collects the choice via two questions ("existing issue?" then, if no, "local or remote?"). `--remote` and `--issue <ref>` are fast-paths that skip those questions when the user already knows the mode. Same loop logic across all three; only the task-source query and completion check differ.
 - **Phase 6 auto-runs at sentinel.** Bash loop writes `.tachikoma/outcome=complete` on success. `--once` mode immediately enters Phase 6. For `--afk`, the next `/tachikoma` invocation detects completed worktrees and routes to Phase 6.
 - **Phase R recovers interrupted runs.** State is fully resumable per worktree. After an interruption, `/tachikoma` (or `/tachikoma resume`) detects recoverable worktrees and offers Resume / Review / Restart per worktree. Restart can fully remove the worktree.
@@ -94,13 +98,15 @@ Reasoning so future-you doesn't relitigate.
 
 ## Phases of one `/tachikoma`
 
-1. **Preconditions** — git repo, ≥1 commit, `claude` on PATH, `git worktree` available, cwd not an active tachikoma worktree, no name collisions for the new worktree/branch, `gh` auth (remote mode).
+1. **Preconditions** — git repo, ≥1 commit, `claude` on PATH, `git worktree` available, cwd not an active tachikoma worktree, no name collisions for the new worktree/branch, `gh` auth (remote/issue/queue-repo mode).
 2. **Grill** — goal, quality bar, files in/out of scope, stop condition, mode, cap.
 3. **Auto-detect feedback loops** — from `package.json`/`Makefile`/`justfile`/`AGENTS.md`. Confirm.
-4. **PRD synthesis** — local: write `<wt>/plans/prd.json`. Remote: `to-prd` → `to-issues` → agent brief → label.
-5. **Worktree + scaffold** — `git -C <main-repo> worktree add <wt> -b tachikoma/<slug> <base-branch>`; render `<wt>/.tachikoma/tachikoma.sh`, `<wt>/.tachikoma/prompt.md`, `<wt>/.tachikoma/base_branch`. Commit scaffolding inside the worktree. Print worktree path.
-6. **Prompt review** — show full rendered prompt; require approval.
-7. **Launch** — `cd <wt> && .tachikoma/tachikoma.sh --once` (foreground) or `cd <wt> && nohup .tachikoma/tachikoma.sh --afk N > .tachikoma/run.log 2>&1 & disown`.
+4. **PRD synthesis** — local: write `<wt>/plans/prd.json`. Remote: `to-prd` → `to-issues` → agent brief → label. Issue mode: fetch issue, post agent brief, apply `ready-for-agent`. Auto-create a linked work_request if none exists.
+5. **Label claim** (issue-linked runs only) — apply `agent-running`, remove `ready-for-agent`; re-fetch to verify claim succeeded (concurrent-agent guard); update work_request `status: grabbed`.
+6. **Worktree + scaffold** — `git -C <main-repo> worktree add <wt> -b tachikoma/<slug> <base-branch>`; render `<wt>/.tachikoma/tachikoma.sh`, `<wt>/.tachikoma/prompt.md`, `<wt>/.tachikoma/base_branch`. Commit scaffolding inside the worktree. Print worktree path.
+7. **Prompt review** — show full rendered prompt; require approval.
+8. **Launch** — `cd <wt> && .tachikoma/tachikoma.sh --once` (foreground) or `cd <wt> && nohup .tachikoma/tachikoma.sh --afk N > .tachikoma/run.log 2>&1 & disown`.
+9. **Phase 6 label transition** (issue-linked) — after squash-merge and PR decision: apply `ready-for-review`, remove `agent-running`.
 
 ## Common breakages
 
@@ -117,6 +123,8 @@ Reasoning so future-you doesn't relitigate.
 - **Refuses to start because cwd is an active tachikoma worktree** — cd to main repo or a non-tachikoma worktree first.
 - **Long-lived Claude Code session uses stale SKILL.md** — open a fresh Claude session in the repo. Bash loop and rendered prompt are unaffected (already on disk).
 - **`.tachikoma/base_branch` missing** — Phase 6 falls back to asking which branch to merge into. Happens for worktrees scaffolded by an old version of this skill.
+- **Label claim lost (issue-linked run)** — after applying `agent-running`, re-fetch shows it's absent: another Tachikoma claimed it first. Single-issue mode exits with a message; queue mode skips to the next item. No worktree is created, no `failure_count` bump.
+- **`agent-running` stuck on issue after crash** — Tachikoma died before Phase 6 could apply `ready-for-review`. Manually run: `gh issue edit <N> --repo <org/repo> --remove-label "agent-running" --add-label "ready-for-agent"` to return it to the pool.
 - **Queue drain: item cap hit** — queue drain auto-retries once at half the cap. Second cap = failure, appends `## Queue Failures` to the work-request file, bumps `failure_count`. Two failures → `needs-triage`.
 - **Queue drain: merge conflict in Phase 6** — aborts merge, pushes branch as a draft PR, logs failure, moves to next item. Work-request gets a `## Queue Failures` entry with the conflicting files.
 - **macOS sleeps mid-queue-drain** — use `/tachikoma queue --caffeinated` (or `-C`); each item's launch is wrapped with `caffeinate -d`.

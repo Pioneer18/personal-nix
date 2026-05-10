@@ -5,14 +5,24 @@ last_updated: "2026-05-10"
 summary: "Pocock's Tachikoma Wiggum loop, adapted for this machine. `/tachikoma` grills, creates a sibling git worktree, runs a capped `claude -p` loop, then walks you through merge/PR/issue-close. Multiple tachikomas can run concurrently in the same repo. Three task sources, full crash-recovery."
 category: agent-dev
 link: "~/projects/personal-nix/skills/tachikoma/README.md"
+user_guide: "~/projects/personal-nix/skills/tachikoma/USER-GUIDE.md"
 ---
 
-Autonomous AFK coding on any git repo. See the [canonical README](../../skills/tachikoma/README.md) for invocation reference, design decisions, file layout, and known gaps.
+Autonomous AFK coding on any git repo. See the [user guide](../../skills/tachikoma/USER-GUIDE.md) for plain-English feature walkthrough, or the [canonical README](../../skills/tachikoma/README.md) for design decisions, file layout, and known gaps.
 
-**Three modes**:
-- `/tachikoma <goal>` — local PRD (`plans/prd.json`)
-- `/tachikoma --remote <goal>` — greenfield, publishes PRD as GitHub issues via `to-prd` + `to-issues`
+**Three task-source modes**:
+- `/tachikoma` — local PRD (`plans/prd.json`)
+- `/tachikoma --remote` — greenfield, publishes PRD as GitHub issues via `to-prd` + `to-issues`
 - `/tachikoma --issue <ref>` — uses an existing GitHub issue body as the PRD
+
+**Queue modes**:
+- `/tachikoma queue` — drain local work-request queue sequentially (full Phases 1–6 per item, batch prefs set once)
+- `/tachikoma queue <repo>` — GitHub-sourced drain: fetches `ready-for-agent AND NOT agent-running` issues from `<repo>` (`org/repo`), auto-creates linked work_requests for any without one, then runs normal drain. Fires a macOS HITL notification + terminal summary when no `ready-for-agent` issues remain.
+
+**GitHub label lifecycle** (issue-linked runs only):
+- **Phase 2.5** (before worktree scaffolding): applies `agent-running`, removes `ready-for-agent` — optimistic distributed claim. Verifies the label stuck before proceeding (concurrent-agent guard).
+- **Phase 6** (after PR/completion): applies `ready-for-review`, removes `agent-running` — whether or not a PR was opened.
+- **Failure**: removes `agent-running`, restores `ready-for-agent` (< 2 failures) or applies `needs-triage` (≥ 2). Deliberate stop also reverts to `ready-for-agent` without bumping `failure_count`.
 
 **Worktree model**: Every `/tachikoma` creates a sibling git worktree at `<main-parent>/<repo>-tachikoma-<slug>/` and works inside it. Lets multiple tachikomas run on the same codebase in parallel — each in its own branch, working directory, and `.tachikoma/` state. Main repo can stay dirty during runs. Discovery is per-repo via `git worktree list`; no global registry.
 

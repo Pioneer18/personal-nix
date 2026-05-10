@@ -35,6 +35,7 @@ Each work-request file carries a YAML frontmatter block. Fields written and read
 |---|---|---|---|
 | `status` | `open` \| `grabbed` \| `done` \| `needs-triage` | this skill, `/tachikoma queue` | Lifecycle state. See state machine below. |
 | `target_repo` | path string (may use `~`) | this skill (`add`) | Where tachikoma runs. Validated for existence on `list` and `grab`. |
+| `github_issue` | string (`org/repo#N`) or empty | this skill (`add`), `/tachikoma` (auto-create) | Links this work_request to a GitHub issue. Empty = not linked. |
 | `failure_count` | integer (≥ 0; missing = 0) | `/tachikoma queue` only | Cumulative failure count from queue-drain runs. Bumped on any failure (cap-twice, error, stopped, blocker-exit, phase6-conflict). Never decremented. |
 | `last_updated` | ISO date (`YYYY-MM-DD`) | this skill, `/tachikoma queue` | Bumped on every state change. |
 
@@ -76,9 +77,11 @@ Fields to resolve, in order:
 8. **Feedback loops** — commands to verify correctness: typecheck, tests, lint. Recommend commands discovered from repo exploration (e.g. `npx tsc --noEmit`, `npm test`). Confirm with user before accepting.
 9. **Quality bar** — `prototype`, `production`, or `library`. Recommend based on the target repo and task nature. Explain the tradeoff if the user is unsure: prototype = fast+rough, production = correct+polished, library = API stability matters.
 
+10. **GitHub issue link** (optional) — Ask: *"Is this work_request linked to an existing GitHub issue? (e.g. `MioMarker/healthbite#22`, or skip)"*. Validate format if provided (`org/repo#N`). Write to `github_issue` frontmatter field; leave empty if skipped.
+
 **Step 4 — Write the file**
 
-Once all fields are resolved, write `~/projects/personal-nix/wiki/work-requests/<slug>.md` using the template at `skills/work-queue/work-request.tmpl`. Substitute all `{{PLACEHOLDER}}` values. Set `status: open` and `last_updated` to today's ISO date.
+Once all fields are resolved, write `~/projects/personal-nix/wiki/work-requests/<slug>.md` using the template at `skills/work-queue/work-request.tmpl`. Substitute all `{{PLACEHOLDER}}` values. Render `{{GITHUB_ISSUE}}` from the answer to field 10 (empty string `""` if skipped). Set `status: open` and `last_updated` to today's ISO date.
 
 **Step 5 — Confirm**
 

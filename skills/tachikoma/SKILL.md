@@ -36,6 +36,7 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all tachikoma worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a tachikoma worktree. Picker if >1 running. `--all` halts every running tachikoma in the repo. |
 | `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full Phases 1–6 per item, batch preferences set once up front. With `<slug>`: run a single specific queue item. With `--caffeinated` (alias `-C`): prevent macOS sleep for the entire session by wrapping each item's launch with `caffeinate -d`. |
+| `/tachikoma queue <repo>` | Queue-drain mode sourced from GitHub. Fetches all `ready-for-agent AND NOT agent-running` issues from `<repo>` (format: `org/repo`), auto-creates linked work_requests for any without one, then runs the normal queue drain (Phases 1–6 per item). Ends with a HITL notification when no `ready-for-agent` issues remain. |
 
 `--remote` and `--issue <ref>` are **fast-paths**, not requirements — bare `/tachikoma` collects the same answers via two grill questions in Phase 1 (existing issue? then, if not, local-or-remote?). Use the flags when you already know the mode and want to skip those questions; either flow lands in the same Phase 2/3 logic.
 
@@ -55,7 +56,7 @@ Multiple tachikomas can run concurrently in the same repo (in separate worktrees
 4. **cwd must NOT be an active tachikoma worktree.** Refuse if either is true: (a) `<cwd>/.tachikoma/run.pid` exists and the PID is alive, (b) `git -C <cwd> rev-parse --abbrev-ref HEAD` matches `tachikoma/*`. Reason: branching off a mid-tachikoma state would inherit half-finished commits. Tell user to `cd` to the main repo or a non-tachikoma worktree.
 5. `claude` CLI on PATH (`command -v claude`).
 6. `git worktree` available (Git ≥ 2.5; assume yes on macOS, but verify with `git worktree list` and refuse if it errors).
-7. For `--remote` and `--issue`: `gh` CLI on PATH and authenticated (`gh auth status`).
+7. For `--remote`, `--issue`, and `queue <repo>`: `gh` CLI on PATH and authenticated (`gh auth status`). For `queue <repo>`: additionally, `<repo>` must be a valid `org/repo` string and accessible via `gh repo view <repo>`.
 8. For `--issue <ref>`:
    - The issue must exist and be open (`gh issue view <num> --json state,title,body,labels` succeeds and `state == OPEN`). This check applies at **every** invocation, not just first-time — a prior Phase 6 squash-merge can auto-close the issue (via `Closes #N`), and a re-run of `/tachikoma --issue <N>` against the same number must refuse rather than silently re-tachikoma a finished issue. If `state != OPEN`, refuse with: "Issue #N is already closed. Reopen it if you want to tachikoma it again."
    - The cwd repo's `nameWithOwner` must match the ref's repo (if user passed `org/repo#N`). If mismatch, refuse — `cd` first.
@@ -182,6 +183,27 @@ The issue **is** the PRD. No `to-prd`/`to-issues` calls; no `plans/prd.json`.
 5. Capture the issue number — the loop's task source will be scoped to it specifically (not the broader `ready-for-agent` query).
 
 If the issue is already labeled `ready-for-agent` and has a recent agent-brief comment from a prior `/tachikoma` invocation, ask the user whether to repost a fresh brief or reuse the existing one.
+
+**Work_request auto-creation (issue mode)**:
+1. Compute slug: `issue-<N>-<slug-of-title>` (same normalization as `TACHIKOMA_BRANCH` slug).
+2. Check if `~/projects/personal-nix/wiki/work-requests/<slug>.md` already exists AND its `github_issue` field matches this issue. If so, reuse it — do not duplicate.
+3. If no matching work_request exists: create `~/projects/personal-nix/wiki/work-requests/<slug>.md` using the work-request template. Fill from the issue body: goal = issue title, stop_condition = acceptance criteria if present, target_repo = `git -C <cwd> rev-parse --show-toplevel`. Set `github_issue: <org/repo>#<N>`, `status: open`.
+4. This applies to both `/tachikoma --issue N` (single-issue fast-path) and queue mode sourced from GitHub.
+
+## Phase 2.5: label claim (issue-linked runs)
+
+For any run with a linked `github_issue` (from `--issue <N>`, `/tachikoma queue <repo>`, or a work_request with `github_issue` set):
+
+**Before creating the worktree** (after Phase 2, before Phase 3):
+
+1. Apply `agent-running` label to the issue, remove `ready-for-agent`:
+   ```bash
+   gh issue edit <N> --repo <org/repo> --add-label "agent-running" --remove-label "ready-for-agent"
+   ```
+2. Re-fetch the issue: `gh issue view <N> --repo <org/repo> --json labels`. Verify `agent-running` is present. This is the optimistic distributed lock — if another agent claimed it first, the label state will be inconsistent. If `agent-running` is absent, refuse and skip to the next issue (queue mode) or exit with a message (single-issue mode).
+3. Update the linked work_request: `status: open` → `status: grabbed`, bump `last_updated`.
+
+The `agent-running` label is the distributed claim signal. A concurrent Tachikoma filtering `ready-for-agent AND NOT agent-running` will not see this issue after step 1.
 
 ## Phase 3: worktree creation + scaffolding
 
@@ -347,6 +369,11 @@ Present output verbatim. Don't summarize.
   - Open PR: `gh -R <owner/repo> pr create --title "<derived>" --body "<derived>" --base <default-branch> --head <BASE_BRANCH>`. For `--issue` mode, body should reference `Closes #<N>`. Show the proposed title/body and let user edit before running.
   - Print the PR URL. Capture for Step 7.
 - On no: skip; user can do it manually later.
+
+For any run with a linked `github_issue` (applies regardless of whether a PR was opened):
+```bash
+gh issue edit <N> --repo <org/repo> --add-label "ready-for-review" --remove-label "agent-running"
+```
 
 **Step 7 — Offer to close the issue** *(`--issue` mode only)*. Ask: *"Close issue #<N> now?"*
 
@@ -721,7 +748,13 @@ Skip immediately. No retry. Proceed to the failure-log path below, then move to 
    - `failure_count` after bump < 2: reset `status: grabbed` → `status: open`
    - `failure_count` after bump ≥ 2: set `status: needs-triage` (excluded from all future queue drains until manually reset)
 
-5. **Print failure line:**
+5. **Label reversion** (for issue-linked work_requests — those with a non-empty `github_issue` field):
+   - `failure_count` after bump < 2: `gh issue edit <N> --repo <org/repo> --remove-label "agent-running" --add-label "ready-for-agent"` (issue back in the pool)
+   - `failure_count` after bump ≥ 2: `gh issue edit <N> --repo <org/repo> --remove-label "agent-running" --add-label "needs-triage"` (quarantined — human must reset)
+   - During in-session cap retry (before final failure decision): keep `agent-running` — no label change while actively retrying.
+   - On `stopped` outcome (deliberate kill): `gh issue edit <N> --repo <org/repo> --remove-label "agent-running" --add-label "ready-for-agent"` (no `failure_count` bump — deliberate stop isn't a failure).
+
+6. **Print failure line:**
    ```
    ✗ [1/3] fix-vital-age — FAILED (error · draft PR opened · needs-triage after 2 failures)
    ```
@@ -769,6 +802,45 @@ Needs attention: 1 failed item · 1 needs-triage item
 ```
 
 Write `.last-queue-run.md` using the identical content so it's readable both in terminal and in a text editor.
+
+### When `<repo>` arg is provided: GitHub-sourced queue drain
+
+When `/tachikoma queue <repo>` is invoked (e.g. `/tachikoma queue MioMarker/healthbite`):
+
+**Step 0 — Fetch GitHub queue:**
+1. `gh issue list --repo <repo> --label "ready-for-agent" --state open --json number,title,body,labels,comments --limit 100`
+2. Filter out any issues that also have `agent-running` label (already claimed).
+3. For each remaining issue, check `~/projects/personal-nix/wiki/work-requests/` for an existing work_request with `github_issue: <repo>#<N>`. If none exists, auto-create one (see Phase 2 work_request auto-creation rules above).
+4. Build the run list from these work_requests. Proceed into the normal queue-drain Step 1 (pre-flight) with this list.
+
+**HITL notification** (after Step 3 session summary):
+
+After the drain completes, fetch current issue state:
+```bash
+gh issue list --repo <repo> --state open --json number,title,labels --limit 100
+```
+
+Classify remaining open issues:
+- `needs-triage` → *"triage and label"*
+- `needs-info` → *"respond to reporter"*
+- `ready-for-human` → *"implement manually"*
+- `ready-for-review` → *"review open PR"* (already handled but not yet closed)
+
+If any remain, fire a macOS notification:
+```bash
+osascript -e 'display notification "N issues need human attention in <repo>" with title "Tachikoma — HITL required"'
+```
+
+And print a terminal summary:
+```
+⏸ Queue drained — N issues need human attention (<repo>)
+
+  #14  Add onboarding screen        needs-triage    → triage and label
+  #19  Redesign settings UI         ready-for-human → implement manually
+  #23  Clarify acceptance criteria  needs-info      → respond to reporter
+```
+
+If zero issues remain (everything closed or resolved): print `✓ Queue clear — no open issues in <repo>.`
 
 ### Constraints
 
