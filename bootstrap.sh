@@ -58,7 +58,9 @@ fi
 
 # 4. Local slot file (gitignored, lives in team repo)
 step "Wiring personal-nix into team's local slot"
-HOSTNAME=$(scutil --get ComputerName 2>/dev/null || hostname -s)
+# Use LocalHostName (network hostname) — matches what nix-darwin uses.
+# ComputerName is the Finder display name and may have spaces/parens.
+HOSTNAME=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
 LOCAL_SLOT="$TEAM_DIR/users/${USER_SLUG}-${HOSTNAME}-local.nix"
 if [ -f "$LOCAL_SLOT" ]; then
   ok "local slot already exists at $LOCAL_SLOT"
