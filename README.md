@@ -12,7 +12,7 @@ Portable, reset-proof Claude Code substrate for any of my Macs.
 ## Bootstrap on a fresh Mac
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Pioneer18/personal-nix/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Pioneer18/personal-nix/HEAD/bootstrap.sh | bash
 ```
 
 The script:
