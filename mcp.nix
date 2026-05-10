@@ -29,9 +29,15 @@
         fi
       }
 
-      # GitHub — official server. Uses GITHUB_TOKEN from env (sourced from
-      # ~/.secrets, which our secretsFromKeychain activation regenerates).
-      register_mcp github -- npx -y @modelcontextprotocol/server-github
+      # GitHub — GitHub's own server (github/github-mcp-server, packaged in
+      # nixpkgs). Richer toolsets than @modelcontextprotocol/server-github;
+      # enables org-scoped queries (e.g., 'list MioMarker repos') that the
+      # community server flailed on.
+      # Reads GITHUB_PERSONAL_ACCESS_TOKEN from env (alias of GITHUB_TOKEN
+      # set in ~/.secrets by secrets-from-keychain.sh).
+      register_mcp github -- \
+        ${pkgs.github-mcp-server}/bin/github-mcp-server stdio \
+        --toolsets default,orgs,notifications
 
       # Filesystem — restrict to safe roots. Add more as needed.
       register_mcp filesystem -- \

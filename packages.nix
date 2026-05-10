@@ -16,6 +16,9 @@
     lazygit             # git TUI
     yq-go               # like jq, for YAML
 
+    # MCP servers (binaries referenced by mcp.nix)
+    github-mcp-server   # GitHub's official MCP server (richer than @modelcontextprotocol/server-github)
+
     # Add more here as you discover needs. Keep this list small and
     # additive — every entry slows rebuilds slightly.
   ];

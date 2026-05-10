@@ -44,6 +44,9 @@ read_keychain "github_token" "GITHUB_TOKEN"
   # SC2016: literal $GITHUB_TOKEN, expanded at source time
   # shellcheck disable=SC2016
   echo 'export GH_TOKEN="$GITHUB_TOKEN"'
+  # github-mcp-server requires this exact env var name
+  # shellcheck disable=SC2016
+  echo 'export GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_TOKEN"'
 } >> "$TMP"
 
 # Atomic move with locked-down perms (sourced files don't need x).
