@@ -22,7 +22,7 @@ missing=0
 read_keychain() {
   local svc="$1"
   local var="$2"
-  if val=$(security find-generic-password -s "$svc" -a "$USER" -w 2>/dev/null); then
+  if val=$(/usr/bin/security find-generic-password -s "$svc" -a "$USER" -w 2>/dev/null); then
     printf 'export %s=%q\n' "$var" "$val" >> "$TMP"
     echo "  ✓ $var (Keychain item: $svc)"
   else
