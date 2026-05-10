@@ -12,9 +12,10 @@ Pocock's "Ralph Wiggum" autonomous AI coding loop, adapted to this machine, the 
 
 | Form | Behavior |
 |---|---|
-| `/ralph <goal>` | Plan + run, **local mode**. New sibling worktree. PRD in `plans/prd.json`. |
-| `/ralph --remote <goal>` | Plan + run, **remote-greenfield mode**. PRD via `to-prd` → `to-issues`. New worktree. |
-| `/ralph --issue <ref>` | Plan + run, **existing-issue mode**. Uses GitHub issue body as PRD. New worktree. `<ref>` accepts `#138`, `138`, `org/repo#138`. |
+| `/ralph <goal>` | Plan + run. Mode (existing-issue / local / remote-greenfield) is chosen via two grill questions in Phase 1. New sibling worktree. |
+| `/ralph --remote <goal>` | Fast-path: skip the mode-selection grill questions and go straight to remote-greenfield mode. PRD via `to-prd` → `to-issues`. New worktree. |
+| `/ralph --issue <ref>` | Fast-path: skip the mode-selection grill questions and go straight to existing-issue mode. Uses GitHub issue body as PRD. New worktree. `<ref>` accepts `#138`, `138`, `org/repo#138`. |
+| `/ralph 138` or `/ralph #138` | Shorthand — a bare integer or `#N` first arg is normalized to `/ralph --issue <N>` before preconditions run. Same fast-path behavior. |
 | `/ralph done` (`<slug>`?) | Phase 6 — interactive squash-merge into base + worktree+branch cleanup + optional PR/issue-close. Picker if >1 completed; auto-pick if 1. |
 | `/ralph resume` (`<slug>`?) | Phase R — re-launch an interrupted loop. Picker if >1 recoverable. |
 | `/ralph status` (alias `/ralph t`, `<slug>`?) | Read-only telemetry. No args: compact summary table across all ralph worktrees in the repo. With slug: drill in. |
@@ -74,7 +75,7 @@ Reasoning so future-you doesn't relitigate.
 - **Phase 6 merge runs in the base-worktree.** `git -C <base-wt>` does the merge regardless of orchestrator cwd. Refuses if base-worktree dirty. Auto-stash deemed too risky.
 - **Refuse `/ralph` from inside an active ralph worktree.** Branching off a mid-ralph state would inherit half-finished commits. User cd's to main repo or a non-ralph worktree first.
 - **No batch fanout in v1.** Three sequential `/ralph --issue N` invocations cover the parallelism use case; batch design (shared grill, fan-in status) deferred until pain points emerge.
-- **Three modes, flagged at invocation.** Local (default) for prototype work, `--remote` for greenfield backlogs, `--issue <ref>` for existing GitHub issues. Same loop logic; only the task-source query and completion check differ.
+- **Three modes, picked in the grill (with fast-path flags).** Local for prototype work, remote-greenfield for new backlogs, existing-issue for a specific GitHub issue. Phase 1 collects the choice via two questions ("existing issue?" then, if no, "local or remote?"). `--remote` and `--issue <ref>` are fast-paths that skip those questions when the user already knows the mode. Same loop logic across all three; only the task-source query and completion check differ.
 - **Phase 6 auto-runs at sentinel.** Bash loop writes `.ralph/outcome=complete` on success. `--once` mode immediately enters Phase 6. For `--afk`, the next `/ralph` invocation detects completed worktrees and routes to Phase 6.
 - **Phase R recovers interrupted runs.** State is fully resumable per worktree. After an interruption, `/ralph` (or `/ralph resume`) detects recoverable worktrees and offers Resume / Review / Restart per worktree. Restart can fully remove the worktree.
 - **Milestone banners stream during the run.** Per-iteration `✓ MILESTONE` banner with a one-line "what's now true that wasn't", plus `🏁 RALPH COMPLETE` / `⏱ CAP HIT` banner on exit.

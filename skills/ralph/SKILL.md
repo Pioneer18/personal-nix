@@ -1,6 +1,6 @@
 ---
 name: ralph
-description: Autonomous AI coding loop. Interviews for a goal, generates a PRD (local JSON, GitHub greenfield, or existing GitHub issue), launches a capped `claude -p` loop in its own git worktree, then walks you through squash-merge / PR / issue-close. Multiple ralphs can run concurrently on the same codebase — each in its own sibling worktree. Survives interruption (resumable from disk state). Triggers — `/ralph`, `/ralph --remote`, `/ralph --issue <ref>`, `/ralph done`, `/ralph resume`, `/ralph status` (alias `/ralph t`), `/ralph stop`, `/ralph queue` (drain the work-request queue), or any natural-language request to start, check on, recover, or wrap up a Ralph run ("kick off Ralph on issue #138", "AFK this backlog", "check the ralph status", "did ralph finish", "resume the ralph loop", "drain the queue", "work through my queue"). For methodology, see Matt Pocock's aihero.dev article and the Ralph SOP.
+description: Autonomous AI coding loop. Interviews for a goal, generates a PRD (local JSON, GitHub greenfield, or existing GitHub issue), launches a capped `claude -p` loop in its own git worktree, then walks you through squash-merge / PR / issue-close. Multiple ralphs can run concurrently on the same codebase — each in its own sibling worktree. Survives interruption (resumable from disk state). Triggers — `/ralph`, `/ralph --remote`, `/ralph --issue <ref>`, `/ralph 138` or `/ralph #138` (shorthand for `--issue 138`), `/ralph done`, `/ralph resume`, `/ralph status` (alias `/ralph t`), `/ralph stop`, `/ralph queue` (drain the work-request queue), or any natural-language request to start, check on, recover, or wrap up a Ralph run ("kick off Ralph on issue #138", "AFK this backlog", "check the ralph status", "did ralph finish", "resume the ralph loop", "drain the queue", "work through my queue"). For methodology, see Matt Pocock's aihero.dev article and the Ralph SOP.
 ---
 
 # Ralph
@@ -27,16 +27,21 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 
 | Form | Behavior |
 |---|---|
-| `/ralph` | Plan + run, **local mode**. Creates a new sibling worktree, scaffolds in it, launches loop. PRD in `plans/prd.json`, deleted on completion. |
-| `/ralph --remote` | Plan + run, **remote-greenfield mode**. PRD → `to-prd` → `to-issues` → auto-promoted to `ready-for-agent`. New worktree per run. |
-| `/ralph --issue <ref>` | Plan + run, **existing-issue mode** — uses a GitHub issue body as the PRD; loop scoped to that single issue. New worktree per run. |
+| `/ralph` | Plan + run. Mode (existing-issue / local / remote-greenfield) is chosen via two grill questions in Phase 1. Creates a new sibling worktree, scaffolds in it, launches loop. |
+| `/ralph --remote` | **Fast-path** for remote-greenfield mode — skips the mode-selection grill questions. PRD → `to-prd` → `to-issues` → auto-promoted to `ready-for-agent`. New worktree per run. |
+| `/ralph --issue <ref>` | **Fast-path** for existing-issue mode — skips the mode-selection grill questions. Uses a GitHub issue body as the PRD; loop scoped to that single issue. New worktree per run. |
+| `/ralph 138` or `/ralph #138` | **Shorthand** — a bare integer or `#N` as the first positional arg is normalized to `/ralph --issue <N>`. Same fast-path behavior, same preconditions (7, 8). |
 | `/ralph done` (optionally `<slug>`) | Manually trigger Phase 6. With `<slug>`, picks that specific completed worktree; otherwise picker if multiple complete, auto-pick if one. Auto-triggered when `/ralph` (no args) is run with a single completed worktree in the repo. |
 | `/ralph resume` (optionally `<slug>`) | Re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. Auto-offered when `/ralph` (no args) is run with recoverable state. |
 | `/ralph status` (alias `/ralph t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all ralph worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
 | `/ralph stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a ralph worktree. Picker if >1 running. `--all` halts every running ralph in the repo. |
 | `/ralph queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full Phases 1–6 per item, batch preferences set once up front. With `<slug>`: run a single specific queue item. |
 
+`--remote` and `--issue <ref>` are **fast-paths**, not requirements — bare `/ralph` collects the same answers via two grill questions in Phase 1 (existing issue? then, if not, local-or-remote?). Use the flags when you already know the mode and want to skip those questions; either flow lands in the same Phase 2/3 logic.
+
 `<ref>` accepts: `#138`, `138`, or `org/repo#138`. The `org/repo` form must match the cwd repo's `nameWithOwner`; if not, refuse and tell the user to `cd` first.
+
+**Argument normalization (runs before preconditions):** if the first positional argument matches a bare integer (`/ralph 138`) or a `#N` pattern (`/ralph #138`), rewrite the invocation to `/ralph --issue <N>` before any further processing. This means precondition 7 (`gh` auth) and precondition 8 (issue exists, repo matches, label vocab) apply just as they would for an explicit `--issue` invocation. The shorthand is purely a parsing convenience — it has no effect once normalized.
 
 `<slug>` matches against the trailing slug of the worktree's branch name (e.g. `issue-138-fix-vital-age` matches `ralph/issue-138-fix-vital-age`). Substring match is OK if unambiguous; otherwise refuse and list candidates.
 
@@ -81,7 +86,13 @@ Multiple ralphs can run concurrently in the same repo (in separate worktrees). T
 
 Run a Ralph-specific grill — do **not** invoke the generic `grill-me` skill. The fields below are required; ask only for those you cannot infer from the conversation context already.
 
-In **`--issue <ref>` mode**: fetch the issue first (`gh issue view <num> --json title,body,labels,comments,assignees`). The issue body is the source of truth for **goal** and **stop condition** — extract them directly. Only grill the user for fields the issue body doesn't cover (typically: files in/out of scope, quality bar, mode/cap, feedback loops). Confirm the extracted goal/stop-condition with the user before proceeding.
+**Open the grill with this framing**, before asking any questions:
+
+> I'll ask ~7 questions to scope this run (goal, quality bar, files in/out of scope, stop condition, mode, cap). Takes ~2 minutes. Type 'cancel' at any point to abort — nothing is created until you approve the plan.
+
+**Cancel path.** If at any point during the grill — including the final "Approved?" prompt — the user replies with `cancel`, `stop`, `exit`, or `nevermind` (or any clear abort intent), respond with exactly *"Cancelled. Nothing was created."* and exit cleanly. Do not write any files, do not create the worktree, do not invoke `to-prd`/`to-issues`. The cancel is honored up until Phase 3 begins; once the worktree exists, the user must use `/ralph stop` instead.
+
+In **`--issue <ref>` mode** (fast-path flag, or grill question 3 returned an issue ref): fetch the issue first (`gh issue view <num> --json title,body,labels,comments,assignees`). The issue body is the source of truth for **goal** and **stop condition** — extract them directly. Only grill the user for fields the issue body doesn't cover (typically: files in/out of scope, quality bar, mode/cap, feedback loops). Confirm the extracted goal/stop-condition with the user before proceeding.
 
 ### Required fields
 
@@ -90,15 +101,21 @@ In **`--issue <ref>` mode**: fetch the issue first (`gh issue view <num> --json 
    - `prototype` ("speed over perfection, shortcuts OK")
    - `production` ("must be maintainable, tests required, no shortcuts")
    - `library` ("public API, backward compatibility matters, careful with breaking changes")
-3. **Files in scope** — explicit globs/paths Ralph may modify. Pocock's tip #3 — without this, Ralph redefines "done" to exclude inconvenient files.
-4. **Files out of scope** — explicit globs/paths Ralph must NOT touch. Use a list that does NOT overlap with files-in-scope (e.g., name specific dirs to exclude rather than `**` which matches everything).
-5. **Stop condition** — concrete acceptance criteria. "Done" must be testable, not "improve the codebase". *In `--issue` mode: extracted from issue acceptance criteria if present.*
-6. **Iteration mode** — `--once` (one iteration, foreground) or `--afk N` (capped loop, background). *In `--issue` mode: bias toward `--once` since the loop is scoped to a single issue.*
-7. **Iteration cap** (AFK only) — if user has no preference, suggest based on PRD size: 1–3 items → 5, 4–9 → 15, 10+ → 30. Hard ceiling 50; refuse higher. *In `--issue` mode: cap at 5 unless the user explicitly overrides — single issues rarely need more.*
+3. **Existing GitHub issue?** — Ask: *"Do you have an existing GitHub issue to work from? (paste the number, or say no)"*. Skip this question if invoked via the `--issue <ref>` or `--remote` fast-paths.
+   - If the user answers with an issue ref (`138`, `#138`, or `org/repo#138`): switch this run into existing-issue mode for the rest of the grill — equivalent to `/ralph --issue <ref>`. Apply the `--issue` preconditions now (precondition 7 + 8), fetch the issue, and use its body as the source of truth for goal and stop condition (reconcile with the goal answered in step 1; ask the user to confirm if they diverge). Skip step 4.
+   - If the user answers "no" / none / similar: continue to step 4.
+4. **Greenfield mode** — Only asked when step 3 was "no" (and not skipped by a fast-path flag). Ask: *"Keep tasks local (faster) or publish to GitHub Issues first? (local / remote)"*.
+   - `local` (default) — tasks live in `plans/prd.json`; no GitHub round-trip. Equivalent to bare `/ralph`.
+   - `remote` — equivalent to `/ralph --remote`. PRD goes through `to-prd` → `to-issues` and child issues are auto-promoted to `ready-for-agent`. Apply the `--remote` precondition now (precondition 7).
+5. **Files in scope** — explicit globs/paths Ralph may modify. Pocock's tip #3 — without this, Ralph redefines "done" to exclude inconvenient files.
+6. **Files out of scope** — explicit globs/paths Ralph must NOT touch. Use a list that does NOT overlap with files-in-scope (e.g., name specific dirs to exclude rather than `**` which matches everything).
+7. **Stop condition** — concrete acceptance criteria. "Done" must be testable, not "improve the codebase". *In `--issue` mode: extracted from issue acceptance criteria if present.*
+8. **Iteration mode** — Ask: *"How should I run this? **Once** (one iteration, runs now in the foreground — good for quick tasks) or **AFK** (capped loop, runs in the background — good for larger goals)?"* Use plain-language Once/AFK framing in the question itself. The raw flag form (`--once` or `--afk N`) is internal — record it in the grill output summary so the user can see what Phase 5 will execute, but never lead with it in the question. *In `--issue` mode: bias toward Once since the loop is scoped to a single issue.*
+9. **Iteration cap** (AFK only) — if user has no preference, suggest based on PRD size: 1–3 items → 5, 4–9 → 15, 10+ → 30. Hard ceiling 50; refuse higher. *In `--issue` mode: cap at 5 unless the user explicitly overrides — single issues rarely need more.*
 
 ### Auto-detected fields (confirm with user before locking in)
 
-8. **Feedback-loop commands** — auto-detect from these sources, in order:
+10. **Feedback-loop commands** — auto-detect from these sources, in order:
    - `package.json` `scripts` keys: `typecheck`/`type-check`, `test`, `lint`
    - `Makefile` targets of the same names
    - `justfile` recipes of the same names
@@ -110,6 +127,7 @@ In **`--issue <ref>` mode**: fetch the issue first (`gh issue view <num> --json 
 ### Grill output
 
 After the grill, summarize all fields in a numbered list — including:
+- **Iteration mode** (rendered as the raw flag form: `--once` or `--afk N`, so the user can see what Phase 5 will execute even though they answered in plain language)
 - **Base branch** (cwd-worktree's current HEAD, where `ralph/<slug>` will be rooted and where Phase 6 will merge back)
 - **Ralph branch** (the computed `ralph/<slug>` name)
 - **Worktree path** (the sibling dir that will be created via `git worktree add`)
