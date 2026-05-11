@@ -86,10 +86,16 @@ The old "Phase 1 / Phase 6 / Phase R" numbering is gone. Use the names above.
 | `/tachikoma status <slug>` | Drill into one specific loop. |
 | `/tachikoma stop` | SIGTERM the running loop. Picker if multiple. |
 | `/tachikoma stop <slug>` / `--all` | Stop a specific loop, or every loop in the repo. |
-| `/tachikoma queue` | Drain the local work-request queue, one item at a time. |
+| `/tachikoma queue` | Single worker drains the local queue, one item at a time, in the current session. |
+| `/tachikoma queue <N>` | **Parallel drain — N background workers** sharing the same queue. Each worker independently pulls the next open item and runs it. Use for overnight runs (e.g. `queue 3`). N must be ≥ 2. |
 | `/tachikoma queue <slug>` | Run a single specific queue item. |
-| `/tachikoma queue --caffeinated` (alias `-C`) | Same drain, but wrap each launch in `caffeinate -d` to prevent macOS sleep. |
-| `/tachikoma queue <org/repo>` | Drain a GitHub-sourced queue (`ready-for-agent AND NOT agent-running` issues from `<repo>`). |
+| `/tachikoma queue --caffeinated` (alias `-C`) | Same drain, but wrap each launch in `caffeinate -d` to prevent macOS sleep. Combinable with `<N>`. |
+| `/tachikoma queue <org/repo>` | Drain a GitHub-sourced queue (`ready-for-agent AND NOT agent-running` issues from `<repo>`). Combinable with `<N>` (e.g. `queue MioMarker/healthbite 3`). |
+| `/tachikoma queue add` | Create a new work-request (guided interview). |
+| `/tachikoma queue add <target-repo>` | Same, skip the repo question. |
+| `/tachikoma queue list` | Show all work-requests in the queue. |
+| `/tachikoma queue stop` | Stop the running drain after the current item finishes. With multiple workers: `queue stop <worker-id>` or `queue stop --all`. |
+| `/tachikoma sitrep` | Show status of all running queue-drain workers. Read-only. |
 
 ### From a GitHub issue (most common)
 
@@ -268,26 +274,40 @@ The queue is a folder of markdown files (`~/projects/personal-nix/wiki/work-requ
 
 ### Drain the queue
 
+**Mental model: a "drain" is one worker against the shared queue.** It pops the next `open` work-request, runs the full lifecycle on it in its own worktree, then pops the next. Repeats until the queue is empty or you stop it. The queue itself is the folder of markdown files — there's no central process owning it.
+
+You can run **multiple workers in parallel** — they share the queue and partition the work via the atomic `open` → `grabbed` status flip on each file. Same model as a worker pool draining a job queue.
+
 ```
-/tachikoma queue                  # runs all open+ready items, one at a time
-/tachikoma queue <slug>           # run one specific item
-/tachikoma queue --caffeinated    # same, but prevents macOS sleep (good for overnight runs)
+/tachikoma queue                  # 1 worker, foreground in this session
+/tachikoma queue 3                # 3 background workers — overnight throughput
+/tachikoma queue <slug>           # run one specific item (single worker)
+/tachikoma queue --caffeinated    # prevent macOS sleep (good for overnight runs)
 /tachikoma queue -C               # alias for --caffeinated
+/tachikoma queue 3 -C             # 3 workers + sleep prevention (typical AFK launch)
 ```
 
 Each item gets its own worktree, branch, and PR — the full preflight → scaffold → launch → ship lifecycle per item. Failures are logged and skipped — the queue keeps moving.
 
-Queue drain runs items with `--once` mode (sequential, foreground) regardless of your `iteration_mode` config. The session is the driver.
+Queue drain runs items with `--once` mode (sequential, foreground) regardless of your `iteration_mode` config. With `queue N` the foreground session collects your batch preferences once, writes them to `~/.claude/tachikoma.conf`, then spawns N detached `claude -p "/tachikoma queue"` workers and exits.
+
+**Sizing N:**
+- `queue` (no N) — keep up with reviews in near-real-time.
+- `queue 2`–`queue 3` — typical overnight throughput; balances API rate limits with review backlog the next morning.
+- `queue 5+` — high risk of hitting Anthropic per-minute caps; do this only if you have a dedicated review session planned and your tier supports it.
+
+Workers compete on a single shared file-based queue. The race window between two workers grabbing the same item is small but non-zero — see the SKILL spec for hardening notes.
 
 ### Managing the queue
 
 ```
-/work-queue add           # create a new work item
-/work-queue list          # show all items grouped by status
-/work-queue done <slug>   # delete the file (queue drain does this automatically on success)
+/tachikoma queue add           # create a new work item
+/tachikoma queue list          # show all items and their status
+/tachikoma queue stop          # abort the drain after the current item finishes
+/work-queue done <slug>        # delete a specific file (drain does this automatically on success)
 ```
 
-Items with `failure_count ≥ 2` are quarantined as `needs-triage` — excluded from future drains until manually reset.
+Items with `failure_count ≥ 2` are quarantined as `needs-triage` — excluded from future drains until manually reset. To discard a `needs-triage` item: `rm ~/projects/personal-nix/wiki/work-requests/<slug>.md`.
 
 ---
 

@@ -2,7 +2,7 @@
 title: "Tachikoma — autonomous AI coding loop"
 tags: [skill, agent, afk, tachikoma, claude-code, github, worktree, concurrent]
 last_updated: "2026-05-11"
-summary: "Pocock's Tachikoma Wiggum loop, adapted for this machine. Zero-friction: reads ~/.claude/tachikoma.conf, launches immediately, auto-ships on completion (squash-merge + PR). Only human touchpoint is reviewing the PR on GitHub. Queue drain runs all open work-requests sequentially."
+summary: "Pocock's Tachikoma Wiggum loop, adapted for this machine. Zero-friction: reads ~/.claude/tachikoma.conf, launches immediately, auto-ships on completion (squash-merge + PR). Only human touchpoint is reviewing the PR on GitHub. Queue drain = one worker against a shared file-based queue; run N workers in parallel with /tachikoma queue N."
 category: agent-dev
 link: "~/projects/personal-nix/skills/tachikoma/README.md"
 user_guide: "~/projects/personal-nix/skills/tachikoma/USER-GUIDE.md"
@@ -17,9 +17,11 @@ Autonomous AFK coding on any git repo. `/tachikoma --issue 138` → PR on GitHub
 - `/tachikoma --remote` — greenfield, publishes PRD as GitHub issues via `to-prd` + `to-issues`
 - `/tachikoma --issue <ref>` — uses an existing GitHub issue body as the PRD
 
-**Queue modes**:
-- `/tachikoma queue` — drain local work-request queue sequentially (full Phases 1–6 per item, batch prefs set once)
-- `/tachikoma queue <repo>` — GitHub-sourced drain: fetches `ready-for-agent AND NOT agent-running` issues from `<repo>` (`org/repo`), auto-creates linked work_requests for any without one, then runs normal drain. Fires a macOS HITL notification + terminal summary when no `ready-for-agent` issues remain.
+**Queue modes** — a "drain" is one worker against the shared file-based queue. The worker pops the next `open` work-request, runs the full Phases 1–6 lifecycle on it, then pops the next. The queue is just the folder of markdown files — no central process owns it, so multiple drains can run in parallel and naturally partition the work via the atomic `open` → `grabbed` status flip:
+- `/tachikoma queue` — 1 worker, foreground in current session
+- `/tachikoma queue <N>` — N background workers (N ≥ 2), each independently pulling from the queue. Typical overnight: `queue 3 -C`. Throughput scales roughly linearly with N, bounded by Anthropic API rate limits and your review bandwidth
+- `/tachikoma queue <repo>` — GitHub-sourced drain: fetches `ready-for-agent AND NOT agent-running` issues from `<repo>` (`org/repo`), auto-creates linked work_requests for any without one, then runs normal drain. Fires a macOS HITL notification + terminal summary when no `ready-for-agent` issues remain. Combinable with `<N>` (e.g. `queue MioMarker/healthbite 3`).
+- `/tachikoma sitrep` — read-only status across all live workers (enumerates `~/.tachikoma/queue-drain.state*` files)
 
 **GitHub label lifecycle** (issue-linked runs only):
 - **Phase 2.5** (before worktree scaffolding): applies `agent-running`, removes `ready-for-agent` — optimistic distributed claim.

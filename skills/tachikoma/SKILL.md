@@ -35,9 +35,15 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 | `/tachikoma resume` (optionally `<slug>`) | **Explicit entry point** for recover phase — re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. |
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all tachikoma worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a tachikoma worktree. Picker if >1 running. `--all` halts every running tachikoma in the repo. |
-| `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full Phases 1–6 per item, batch preferences set once up front. With `<slug>`: run a single specific queue item. With `--caffeinated` (alias `-C`): prevent macOS sleep for the entire session by wrapping each item's launch with `caffeinate -d`. |
-| `/tachikoma queue <repo>` | Queue-drain mode sourced from GitHub. Fetches all `ready-for-agent AND NOT agent-running` issues from `<repo>` (format: `org/repo`), auto-creates linked work_requests for any without one, then runs the normal queue drain (Phases 1–6 per item). Ends with a HITL notification when no `ready-for-agent` issues remain. |
-| `/tachikoma sitrep` | **Check on a running queue drain from any cwd or session.** Reads `~/.tachikoma/queue-drain.state`, checks PID liveness, shows current item + phase + worktree dirty state + log tail. Reports "no active queue drain" when state file is absent. Read-only. |
+| `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue with a single worker — full Phases 1–6 per item, batch preferences set once up front. The worker pulls the next `open` item from the shared queue and processes it; when done, pulls the next; repeats until the queue is empty (or until SIGTERM'd via `queue stop`). With `<slug>`: run a single specific queue item. With `--caffeinated` (alias `-C`): prevent macOS sleep for the entire session by wrapping each item's launch with `caffeinate -d`. |
+| `/tachikoma queue <N>` | **Parallel drain — launches N background workers.** Each worker is independent and pulls the next `open` item from the same shared file-based queue. They naturally partition the queue via the atomic `open` → `grabbed` status flip in each work-request's frontmatter. Each worker writes its own state file at `~/.tachikoma/queue-drain.state.<worker-id>` (so `/tachikoma sitrep` can report on all of them). `N` must be an integer ≥ 2; for a single drain use the bare `/tachikoma queue`. `--caffeinated`/`-C` applies to all workers. Batch preferences are collected once in the foreground before any worker is spawned, written to `~/.claude/tachikoma.conf` so background workers read them silently. |
+| `/tachikoma queue <repo>` | Queue-drain mode sourced from GitHub. Fetches all `ready-for-agent AND NOT agent-running` issues from `<repo>` (format: `org/repo`), auto-creates linked work_requests for any without one, then runs the normal queue drain (Phases 1–6 per item). Ends with a HITL notification when no `ready-for-agent` issues remain. Combinable with `<N>` (e.g. `/tachikoma queue MioMarker/healthbite 3`) to drain a GitHub-sourced queue with N parallel workers. |
+| `/tachikoma queue add` | Create a new work-request (delegates to `/work-queue add`). |
+| `/tachikoma queue add <target-repo>` | Same but skip the repo question. |
+| `/tachikoma queue list` | Show all work-requests in the queue (delegates to `/work-queue list`). |
+| `/tachikoma queue stop` (optionally `<worker-id>` or `--all`) | SIGTERM a queue drain worker. Bare form: if exactly one worker is live, stop it; if more than one, refuse and list workers with IDs. `<worker-id>`: stop that specific worker. `--all`: stop every live worker in parallel. In every case the current item finishes its iteration cleanly, writes its outcome, and the worker exits. State file is updated with the last completed position so `/tachikoma sitrep` accurately reports the stop. |
+| `/tachikoma sitrep` | **Check on running queue drains from any cwd or session.** Enumerates `~/.tachikoma/queue-drain.state*` files (single-worker and per-worker), checks PID liveness for each, shows current item + phase + worktree dirty state + log tail per worker. Reports "no active queue drain" when no state files are present. Read-only. |
+| `/tachikoma help` | Display the user guide in chat. |
 
 `--remote` and `--issue <ref>` are **fast-paths**, not requirements — bare `/tachikoma` collects the same answers via two grill questions in preflight (existing issue? then, if not, local-or-remote?). Use the flags when you already know the mode and want to skip those questions; either flow lands in the same plan phase/3 logic.
 
@@ -48,6 +54,8 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 `<slug>` matches against the trailing slug of the worktree's branch name (e.g. `issue-138-fix-vital-age` matches `tachikoma/issue-138-fix-vital-age`). Substring match is OK if unambiguous; otherwise refuse and list candidates.
 
 Multiple tachikomas can run concurrently in the same repo (in separate worktrees). The per-worktree lockfile (`<wt>/.tachikoma/run.pid`) prevents two loops in the same worktree, but loops in *different* worktrees of the same repo are fine and expected.
+
+**Queue drains are just tachikomas pulling from a shared queue.** A "drain" is one worker that pops the next `open` work-request, runs the full Phase 1–6 lifecycle on it in its own worktree, then pops the next. Running N drains in parallel (`/tachikoma queue N`) is exactly equivalent to opening N terminals and running `/tachikoma queue` in each — they share the file-based queue and coordinate via the atomic `open`→`grabbed` status flip on each work-request's frontmatter. Throughput scales roughly linearly with N, bounded by Anthropic API rate limits, your review bandwidth, and the queue's depth.
 
 ## Preconditions (refuse with explanation if violated)
 
@@ -374,11 +382,13 @@ The issue **is** the PRD. No `to-prd`/`to-issues` calls; no `plans/prd.json`.
 
 If the issue is already labeled `ready-for-agent` and has a recent agent-brief comment from a prior `/tachikoma` invocation, ask the user whether to repost a fresh brief or reuse the existing one.
 
-**Work_request auto-creation (issue mode)**:
+**Work_request auto-creation (queue and GitHub-sourced modes only)**:
+
+Auto-creation applies when invoked via `/tachikoma queue` (local drain) or `/tachikoma queue <repo>` (GitHub-sourced drain). It does NOT fire for bare `/tachikoma --issue N` — those are ad-hoc runs that don't need a queue file.
+
 1. Compute slug: `issue-<N>-<slug-of-title>` (same normalization as `TACHIKOMA_BRANCH` slug).
 2. Check if `~/projects/personal-nix/wiki/work-requests/<slug>.md` already exists AND its `github_issue` field matches this issue. If so, reuse it — do not duplicate.
 3. If no matching work_request exists: create `~/projects/personal-nix/wiki/work-requests/<slug>.md` using the work-request template. Fill from the issue body: goal = issue title, stop_condition = acceptance criteria if present, target_repo = `git -C <cwd> rev-parse --show-toplevel`. Set `github_issue: <org/repo>#<N>`, `status: open`.
-4. This applies to both `/tachikoma --issue N` (single-issue fast-path) and queue mode sourced from GitHub.
 
 ## Claim: label (issue-linked runs)
 
@@ -710,15 +720,6 @@ Omit `Closes #<N>` and `tachikoma-issue` line for local/remote mode.
 
 On success print: `  ✓ PR opened  <PR_URL>`
 
-Register in `~/projects/personal-nix/wiki/pending-pr-cleanups.yml`:
-```yaml
-- pr_url: <PR_URL>
-  slug: <SLUG>
-  issue: <org/repo#N>   # omit if not --issue mode
-  added: <YYYY-MM-DD>
-```
-Commit + push this to `personal-nix` (`git -C ~/projects/personal-nix commit -am "chore: register pending cleanup for <SLUG>" && git -C ~/projects/personal-nix push`).
-
 For any issue-linked run (regardless of whether a PR was opened), print `  Updating issue labels…` then:
 ```bash
 gh issue edit <N> --repo <org/repo> --add-label "ready-for-review" --remove-label "agent-running"
@@ -742,10 +743,16 @@ Worktree was removed in Step 5. Nothing more to do for git state.
 
 **Step 9 — Work-queue cleanup.**
 
-Derive `SLUG` by stripping `tachikoma/` from `TACHIKOMA_BRANCH`. Check `~/projects/personal-nix/wiki/work-requests/<SLUG>.md`:
-- If it doesn't exist: skip silently.
-- If PR was opened: skip deletion — `tachikoma-cleanup` GitHub Actions workflow deletes it when the PR merges. Print `  ✓ Work-request will auto-delete on PR merge`
-- If no PR was opened: invoke `/work-queue done <SLUG>` immediately. Print `  ✓ Work-request deleted`
+Locate the linked work-request using two-pass matching:
+1. **Exact filename match**: `~/projects/personal-nix/wiki/work-requests/<SLUG>.md` where `SLUG` is derived by stripping `tachikoma/` from `TACHIKOMA_BRANCH`.
+2. **`github_issue` field match** (fallback): glob all `*.md` files in `work-requests/`, parse frontmatter, find any with `github_issue` matching this run's linked issue (if `--issue` mode).
+
+If a match is found:
+- If PR was opened: delete the work-request file immediately (`rm <file>`). Print `  ✓ Work-request deleted`
+- If no PR was opened (local mode with no remote): also delete immediately. Print `  ✓ Work-request deleted (no PR — local run)`
+
+If no match is found:
+- Print `  ⚠ Work-request not found — may need manual cleanup` and append this line to the PR body (or print to terminal if no PR): `Work-request not auto-cleaned — if you have a linked work-request, run: /work-queue done <slug>`
 
 After Step 9, print the completion footer:
 ```
@@ -855,6 +862,7 @@ Recent log (last 15 lines):           # omit this section when .tachikoma/ship.l
 
 ────────────────────────────────────────────────────
 /tachikoma stop  ·  /tachikoma resume  ·  /tachikoma done
+Queue: /tachikoma queue list  ·  /tachikoma sitrep
 ```
 
 Light suggestions based on state:
@@ -901,9 +909,42 @@ For `--all`: send SIGTERM to all in parallel; wait up to 60s for all; SIGKILL st
 
 ## Subcommand: `/tachikoma queue` (queue-drain mode)
 
-Sequentially drains the work-request queue, running a full tachikoma lifecycle (Phases 1–6) per item. Designed for long unattended sessions. Each item gets its own worktree, branch, and PR. Built to keep moving — failures are logged and skipped, never block the queue.
+Drains the work-request queue by running a full tachikoma lifecycle (Phases 1–6) per item. A drain is **one worker that pulls the next `open` item from the shared queue, processes it to completion, then pulls the next**. Designed for long unattended sessions. Each item gets its own worktree, branch, and PR. Built to keep moving — failures are logged and skipped, never block the queue.
 
 **`--caffeinated` flag (alias `-C`):** When passed, prevents macOS from sleeping during the drain by wrapping each item's `--once` launch with `caffeinate -d`. Recommended for AFK overnight runs. Can also be set interactively via the batch preferences question (see Step 1). Without this flag the system may sleep mid-drain and stall the loop.
+
+### Worker model
+
+The queue is **file-based and shared**: every drain reads the same directory of `.md` work-requests. Coordination is the atomic `open` → `grabbed` → `done` status flip in each work-request's frontmatter — workers naturally partition the queue by claiming items they grab.
+
+- **`/tachikoma queue`** — single foreground worker in the current session. The agent is the orchestrator; the session is tied up for the duration.
+- **`/tachikoma queue <N>`** (N ≥ 2) — launches N **background** workers, each a detached `claude -p "/tachikoma queue"` process. The foreground session collects batch preferences once (writes them to `~/.claude/tachikoma.conf` so the background workers can read them silently), then spawns the N workers and exits. Each worker grabs items independently; throughput scales roughly linearly with N.
+
+**Multi-worker launch shape** (one per worker, `i` = 1..N):
+
+```
+nohup claude -p "/tachikoma queue" > ~/.tachikoma/drain-worker-<i>.log 2>&1 & disown
+```
+
+Capture each PID; print a summary block before exiting the foreground session:
+
+```
+Launched 3 queue-drain workers:
+  worker 1 — PID 12345 — log ~/.tachikoma/drain-worker-1.log
+  worker 2 — PID 12346 — log ~/.tachikoma/drain-worker-2.log
+  worker 3 — PID 12347 — log ~/.tachikoma/drain-worker-3.log
+
+Monitor with: /tachikoma sitrep   (lists all live workers)
+Stop one:     /tachikoma queue stop <worker-id>
+Stop all:     /tachikoma queue stop --all
+```
+
+**Validation:**
+- `N` must be an integer ≥ 2. `queue 1` errors with: `→ Use bare /tachikoma queue for a single drain.`
+- Refuse if any precondition (1–7) fails — same rules as the single-drain form.
+- If `~/.claude/tachikoma.conf` is missing required batch prefs, collect them interactively in the foreground before spawning any worker. The user answers once, all workers inherit.
+
+**Race-condition note:** the `open` → `grabbed` flip is a read-modify-write on the markdown frontmatter, not a true atomic op. The window where two workers could grab the same item is small (sub-second per item, occurring only when both happen to read the queue at the same instant) but not zero. In practice this is rare enough to ignore; if it bites, the second worker will see `status: grabbed` on its post-flip re-read and can roll back. (Future hardening: switch to a sqlite-backed queue or use `flock(2)` on the work-request file during the flip.)
 
 **Work-request directory:** `~/projects/personal-nix/wiki/work-requests/*.md`
 
@@ -916,7 +957,9 @@ Sequentially drains the work-request queue, running a full tachikoma lifecycle (
 | `failure_count` | Integer. Bumped on each failure. Missing = 0. |
 | `last_updated` | ISO date, bumped on every state change |
 
-**Queue drain state file: `~/.tachikoma/queue-drain.state`**
+**Queue drain state file: `~/.tachikoma/queue-drain.state[.<worker-id>]`**
+
+Single-worker drain writes to `~/.tachikoma/queue-drain.state`. Multi-worker drains write per-worker state files at `~/.tachikoma/queue-drain.state.<worker-id>` (where `<worker-id>` is `1..N` from the launch order, padded if desired). `/tachikoma sitrep` enumerates all `queue-drain.state*` files and reports each.
 
 Written atomically (write-temp + `mv`) at each phase boundary. Removed on clean exit (Step 3). If a crash leaves it behind, `/tachikoma sitrep` detects the dead PID and says so.
 
@@ -924,7 +967,7 @@ Schema (YAML frontmatter + markdown body):
 
 ```yaml
 ---
-session_pid: <PID of the orchestrator Claude Code session>
+session_pid: <run-unique identifier — epoch nanoseconds from `date +%s%N`>
 started_at: <ISO datetime>
 caffeinated: <true|false>
 totals:
@@ -950,7 +993,7 @@ last_pr: <PR URL or "">
 <last error message or empty>
 ```
 
-`session_pid` is the PID of the Claude Code process running the queue drain (`echo $$` in the shell that launched `/tachikoma queue`). Used by `/tachikoma sitrep` to distinguish live drain vs. crash.
+`session_pid` is a run identifier used by `/tachikoma sitrep` to detect live drain vs. crash. Since Claude Code's Bash tool runs each command in an ephemeral subprocess, `$$` is not a stable session PID. Instead, write a run-unique identifier at drain start: `date +%s%N` (nanosecond epoch). `/tachikoma sitrep` checks liveness by looking for a tachikoma worktree in an active launch phase (`current_phase: launch` with a worktree whose `run.pid` is alive) rather than by kill-probing `session_pid`. The `session_pid` field is kept for forward compatibility but must not be relied on for liveness detection.
 
 **Readiness check** (open+ready):
 - `status: open`
@@ -976,6 +1019,8 @@ Before anything else, scan for interrupted state from a prior session:
 
 ### Step 1 — Pre-flight
 
+**Autonomy rule**: When a preflight blocker has a clear resolution (e.g., uncommitted ADRs that work-requests reference, a stale branch, missing labels), take the recommended action automatically and explain it in one line. Only ask the user when the blocker requires a decision with no obvious default (e.g., merge conflict strategy, ambiguous target branch).
+
 1. Glob and parse all work-requests. Distinguish two empty states:
    - **Truly empty** — no `.md` files (excluding `.gitkeep`): `"No work requests found. Create one with /work-queue add."`
    - **Items exist but none ready** — show each blocking reason inline: `"2 items exist but none are ready:"`
@@ -988,6 +1033,7 @@ Before anything else, scan for interrupted state from a prior session:
 2. Show all candidates with indices. Include `needs-triage` items visibly but mark them excluded:
    ```
    Queue drain — 3 items to run  (1 excluded)
+   ℹ  Work-requests live in personal-nix (public) — don't queue private work here.
 
      [1] fix-vital-age            → ~/projects/platform
      [2] refactor-auth-middleware  → ~/projects/platform
@@ -996,22 +1042,16 @@ Before anything else, scan for interrupted state from a prior session:
    ```
    With `/tachikoma queue <slug>`: filter to that one item. Refuse on no match, ambiguity, or `needs-triage` status (tell user to reset it manually first).
 
-3. Ask batch preferences **once**, showing defaults inline so enter accepts:
-   ```
-   Quality bar [production]:
-   Iteration cap [10]:
-   Keep system awake (caffeinate -d)? [yes]:
-   ```
-   The caffeinate preference is pre-answered `yes` if `--caffeinated` / `-C` was passed on the command line; otherwise the user chooses interactively. Record the answer as `caffeinated: true|false` for use in Step 2f.
+3. Resolve batch preferences from `~/.claude/tachikoma.conf` (silent — no prompts). For each of the three values (`quality_bar`, `iteration_cap`, `caffeinated`), use the conf value if present; fall back to the default only if the key is absent. `--caffeinated` / `-C` on the command line overrides conf. Only ask interactively for a value that is missing from both conf and command-line flags. If all three are resolved, skip this step entirely. Record `caffeinated` as `true|false` for use in Step 2f.
 
-4. Confirm before entering the loop. Accept a plain enter/yes, or a space-separated list of indices/slugs to exclude:
+4. Print the resolved run list and proceed immediately — no confirmation gate:
    ```
-   Proceed with 3 items? (enter to confirm, or type indices/slugs to exclude, e.g. "2 auth-middleware"):
+   Launching queue drain — 3 items  →  ~/projects/platform  (production / cap 15 / caffeinated)
    ```
-   Strip excluded items from the run list before continuing.
+   To exclude items, the user passes indices/slugs on the command line (e.g. `/tachikoma queue --exclude 2 auth-middleware`). Strip any excluded items from the run list before printing.
 
 5. **Initialize state file.** After confirmation, write `~/.tachikoma/queue-drain.state` (atomic write — write to `~/.tachikoma/queue-drain.state.tmp`, then `mv`). `mkdir -p ~/.tachikoma` first if needed. Set:
-   - `session_pid`: `$$` (the orchestrator's shell PID; best approximation available from within Claude Code — use `echo $$` or read `$PPID`)
+   - `session_pid`: run-unique identifier — write `$(date +%s%N)` (nanosecond epoch). Not a Unix PID; used only as a drain-run fingerprint for `/tachikoma sitrep`.
    - `started_at`: current ISO datetime
    - `caffeinated`: batch preference value
    - `totals.total`: run list length; `done`/`failed`/`remaining` all start at 0 / 0 / total
@@ -1282,7 +1322,10 @@ No active queue drain.
   (or: no previous run found — .last-queue-run.md does not exist)
 ```
 
-**Path B — state file exists, PID dead:**
+**Path B — state file exists, drain not live:**
+
+Liveness check: if `current_phase` is `launch`, check `<current_worktree>/.tachikoma/run.pid` — if that PID is dead, the drain has crashed. For all other phases, treat the drain as crashed if the state file is >30 minutes old with no update (phase_started_at).
+
 ```
 ⚠ Queue drain appears to have crashed.
 
@@ -1291,19 +1334,17 @@ No active queue drain.
     Phase:   launch
     Since:   2026-05-11T03:14:22
 
-  The orchestrator (PID 12345) is no longer running.
-
   To recover:
     /tachikoma resume   → re-launch the interrupted loop
-    /work-queue list    → inspect queue state
+    /tachikoma queue list  → inspect queue state
 ```
 
-**Path C — state file exists, PID alive (normal running drain):**
+**Path C — state file exists, drain live (normal running drain):**
 
 Render a narrative status report from the state file, enriched with live data:
 
 ```
-── Tachikoma queue drain  (PID 12345, running)
+── Tachikoma queue drain  (running)
    2026-05-11T01:30:00 → now (47m)
    Caffeinated: yes
 
@@ -1331,7 +1372,7 @@ The log tail is omitted if `current_worktree` is empty or the log file doesn't e
 
 Callable from any cwd, any Claude Code session. Does not require being inside a git repo.
 
-`session_pid` in the state file is the PID of the orchestrator's shell. Check liveness with `kill -0 <session_pid> 2>/dev/null && echo alive || echo dead`.
+Liveness is determined by checking whether the worktree named in `current_worktree` has a live `run.pid` (when `current_phase` is `launch`) or whether the state file exists at all (for other phases). Do NOT rely on `kill -0 <session_pid>` — `session_pid` is a run-unique epoch timestamp, not a Unix PID.
 
 ## Templates in this skill
 
@@ -1474,4 +1515,86 @@ After a successful run, **enter ship phase** — do NOT print manual git instruc
 - `git worktree remove` fails because of untracked files (e.g. `.tachikoma/run.log`) → ship phase retries with `--force`. Restart path in recover phase also uses `--force`.
 - Base branch isn't checked out anywhere when ship phase runs → `BASE_WT = MAIN_REPO`; ship phase checks out `<BASE_BRANCH>` there before merging, but only if main repo's working tree is clean. Otherwise refuses.
 - User runs `/tachikoma` from inside an active tachikoma worktree → precondition 4 refuses; tell them to `cd` to main repo or a non-tachikoma worktree.
+
+## Help
+
+**When invoked as `/tachikoma help`:** display the following user guide in chat.
+
+---
+
+## Tachikoma — User Guide
+
+Autonomous AI coding loop. You describe the end-state; Tachikoma picks tasks, implements one per iteration, runs feedback loops, commits, and repeats until done or capped.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `/tachikoma` | Start a new run (interactive — asks mode, goal, scope) |
+| `/tachikoma --remote` | Greenfield mode fast-path (creates GitHub issue + PRD) |
+| `/tachikoma --issue <ref>` | Existing-issue mode fast-path (e.g. `--issue 138`) |
+| `/tachikoma 138` or `#138` | Shorthand for `--issue 138` |
+| `/tachikoma status` (or `t`) | Show all tachikoma worktrees for this repo |
+| `/tachikoma stop` | SIGTERM the running loop |
+| `/tachikoma resume` | Re-launch a previously interrupted loop |
+| `/tachikoma done` | Manual ship after AFK completes (auto-ships normally) |
+| `/tachikoma queue` | Drain all open work-queue items sequentially |
+| `/tachikoma queue <slug>` | Run a single specific queue item |
+| `/tachikoma queue --caffeinated` | Same, prevents macOS sleep |
+| `/tachikoma queue add` | Create a new work-request (guided) |
+| `/tachikoma queue list` | Show all queued items and their status |
+| `/tachikoma queue stop` | Abort the drain after the current item finishes |
+| `/tachikoma sitrep` | Check on a running queue drain from any session |
+| `/tachikoma help` | Show this guide |
+
+### How it works
+
+```
+/tachikoma
+  → preflight grill (goal, scope, stop condition, feedback loops)
+  → scaffolds a git worktree at <parent>/<repo>-tachikoma-<slug>/
+  → launches capped claude -p loop (AFK)
+  → loop commits after each passing iteration
+  → sends desktop notification when done
+  → ship phase: squash-merge, PR, cleanup
+```
+
+### Three modes
+
+| Mode | When to use |
+|---|---|
+| **Local** | Work from a goal description; no GitHub issue needed |
+| **Existing issue** (`--issue`) | Scope the loop to a single GitHub issue |
+| **Remote greenfield** (`--remote`) | Creates a GitHub issue + full PRD before looping |
+
+### Example workflows
+
+```
+# Start from a description (local mode)
+cd ~/projects/platform && /tachikoma
+
+# Tackle a specific GitHub issue
+/tachikoma --issue 42
+
+# Drain the work queue overnight
+/tachikoma queue --caffeinated
+
+# Check what's running
+/tachikoma status
+
+# Ship after AFK completes
+/tachikoma done
+```
+
+### Preconditions
+
+- Must be inside a git repo with at least one commit
+- `claude`, `git`, `gh` must be on PATH (for remote/issue modes: `gh` auth)
+- Don't run from inside an active tachikoma worktree
+
+### Multiple concurrent runs
+
+Each run gets its own worktree — you can run multiple tachikomas on the same repo in parallel, each working on a different branch.
+
+---
 - `.tachikoma/base_branch` missing (e.g. user manually deleted it, or worktree was scaffolded by an old version of this skill) → ship phase falls back to asking the user which branch to merge into.

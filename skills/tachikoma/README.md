@@ -20,8 +20,13 @@ Pocock's "Tachikoma Wiggum" autonomous AI coding loop, adapted to this machine, 
 | `/tachikoma resume` (optionally `<slug>`) | Recover phase — re-launch an interrupted loop. Picker if >1 recoverable. |
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Read-only telemetry. No args: compact summary table across all tachikoma worktrees in the repo. With slug: drill in. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is a tachikoma worktree. Picker if >1 running. |
-| `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full tachikoma lifecycle (plan → ship) per item. Batch preferences set once up front. With `--caffeinated` / `-C`: wraps each item's launch with `caffeinate -d` to prevent macOS sleep during long overnight runs. |
-| `/tachikoma queue <repo>` | GitHub-sourced queue drain. Fetches all `ready-for-agent AND NOT agent-running` issues from `<repo>` (`org/repo`), auto-creates linked work_requests for any without one, then runs normal queue drain. Fires a macOS HITL notification + terminal summary when no `ready-for-agent` issues remain. |
+| `/tachikoma queue` (optionally `<slug>`) | Single worker against the shared work-request queue — pops the next `open` item, runs the full tachikoma lifecycle (plan → ship), then pops the next. Batch preferences set once up front. With `--caffeinated` / `-C`: wraps each item's launch with `caffeinate -d` to prevent macOS sleep during long overnight runs. |
+| `/tachikoma queue <N>` | **Parallel drain — N background workers** (N ≥ 2). Each worker is an independent `claude -p "/tachikoma queue"` session pulling from the same shared queue; coordination is the atomic `open` → `grabbed` flip on each work-request file. Typical overnight launch: `/tachikoma queue 3 -C`. |
+| `/tachikoma queue <repo>` | GitHub-sourced queue drain. Fetches all `ready-for-agent AND NOT agent-running` issues from `<repo>` (`org/repo`), auto-creates linked work_requests for any without one, then runs normal queue drain. Fires a macOS HITL notification + terminal summary when no `ready-for-agent` issues remain. Combinable with `<N>`. |
+| `/tachikoma queue add` (optionally `<target-repo>`) | Create a new work-request (guided interview). |
+| `/tachikoma queue list` | Show all work-requests and their status. |
+| `/tachikoma queue stop` (optionally `<worker-id>` or `--all`) | Abort a running queue-drain worker after its current item finishes. With multiple workers: specify `<worker-id>` or `--all`. |
+| `/tachikoma sitrep` | Read-only status across all live queue-drain workers. |
 
 ## File layout
 
