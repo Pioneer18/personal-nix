@@ -6,17 +6,22 @@ interface UseStatusResult {
   tachikomas: TachikomaState[];
   queue: WorkQueueItem[];
   loading: boolean;
+  isRefreshing: boolean;
+  lastRefreshed: Date | null;
   error: string | null;
-  refresh: () => void;
+  refresh: () => Promise<void>;
 }
 
 export function useStatus(): UseStatusResult {
   const [tachikomas, setTachikomas] = useState<TachikomaState[]>([]);
   const [queue, setQueue] = useState<WorkQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (manual = false) => {
+    if (manual) setIsRefreshing(true);
     try {
       const [states, items] = await Promise.all([
         fetchStatus(),
@@ -24,11 +29,13 @@ export function useStatus(): UseStatusResult {
       ]);
       setTachikomas(states);
       setQueue(items);
+      setLastRefreshed(new Date());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load status");
     } finally {
       setLoading(false);
+      if (manual) setIsRefreshing(false);
     }
   }, []);
 
@@ -38,5 +45,7 @@ export function useStatus(): UseStatusResult {
     return () => clearInterval(interval);
   }, [load]);
 
-  return { tachikomas, queue, loading, error, refresh: load };
+  const refresh = useCallback(() => load(true), [load]);
+
+  return { tachikomas, queue, loading, isRefreshing, lastRefreshed, error, refresh };
 }

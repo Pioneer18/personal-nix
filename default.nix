@@ -61,6 +61,7 @@ in {
   home.activation.writeTachikomaUILauncher =
     lib.hm.dag.entryAfter [ "writeBoundary" "buildTachikomaUI" ] ''
       mkdir -p "$HOME/.local/bin"
+
       cat > "$HOME/.local/bin/tachikoma-ui-start" << 'WRAPPER'
 #!/bin/bash
 set -a
@@ -69,8 +70,20 @@ set +a
 exec ${pkgs.nodejs_22}/bin/node --experimental-strip-types \
   "$HOME/projects/personal-nix/mcps/tachikoma-ui/server/index.ts"
 WRAPPER
-    chmod +x "$HOME/.local/bin/tachikoma-ui-start"
-  '';
+      chmod +x "$HOME/.local/bin/tachikoma-ui-start"
+
+      cat > "$HOME/.local/bin/tachikoma-ui-stop" << 'STOP'
+#!/bin/bash
+launchctl bootout "gui/$(id -u)/org.nix-community.home.tachikoma-ui" 2>/dev/null && echo "tachikoma-ui stopped" || echo "tachikoma-ui was not running"
+STOP
+      chmod +x "$HOME/.local/bin/tachikoma-ui-stop"
+
+      cat > "$HOME/.local/bin/tachikoma-ui-restart" << 'RESTART'
+#!/bin/bash
+launchctl kickstart -k "gui/$(id -u)/org.nix-community.home.tachikoma-ui" 2>/dev/null && echo "tachikoma-ui restarted" || echo "tachikoma-ui not found in launchd — run: dev"
+RESTART
+      chmod +x "$HOME/.local/bin/tachikoma-ui-restart"
+    '';
 
   launchd.agents.tachikoma-ui = {
     enable = true;
