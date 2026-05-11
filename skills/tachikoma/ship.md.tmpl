@@ -100,7 +100,7 @@ Run:
 ```
 gh pr create \
   --title "{{PR_TITLE}}" \
-  --body "{{PR_BODY_ESCAPED}}" \
+  --body-file .tachikoma/ship_body.txt \
   --base {{PR_TARGET_BRANCH}} \
   --head {{BASE_BRANCH}}
 ```
