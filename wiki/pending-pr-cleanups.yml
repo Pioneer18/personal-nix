@@ -1,0 +1,18 @@
+# Tachikoma pending PR cleanups
+# Checked hourly by .github/workflows/tachikoma-cleanup.yml
+# Each entry is removed after the PR merges (work-request deleted + issue closed)
+#
+# Fields:
+#   pr_url  - full GitHub PR URL
+#   slug    - work-request filename stem (without .md)
+#   issue   - org/repo#N (optional, only for --issue mode runs)
+#   added   - ISO date entry was created
+entries: []
+- pr_url: https://github.com/MioMarker/major/pull/75
+  slug: issue-46-adr-009-discriminator-false-pos
+  issue: MioMarker/major#46
+  added: 2026-05-10
+- pr_url: https://github.com/MioMarker/major/pull/76
+  slug: issue-68-issue-5-repair-schema-migration
+  issue: MioMarker/major#68
+  added: 2026-05-10
