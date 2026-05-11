@@ -463,7 +463,21 @@ Read `PR_TARGET_BRANCH` from `<WORKTREE_PATH>/.tachikoma/pr_target_branch` (fall
 - On yes:
   - Push if needed: `git -C <BASE_WT> push -u origin <BASE_BRANCH>`
   - Open PR: `gh -R <owner/repo> pr create --title "<derived>" --body "<derived>" --base <PR_TARGET_BRANCH> --head <BASE_BRANCH>`. For `--issue` mode, body should reference `Closes #<N>`. Show the proposed title/body and let user edit before running.
+    Always append these HTML comment markers at the end of the body (invisible in rendered markdown; parsed by the `tachikoma-cleanup` GitHub Actions workflow in `personal-nix`):
+    ```
+    <!-- tachikoma-slug: <SLUG> -->
+    <!-- tachikoma-issue: <org/repo#N> -->
+    ```
+    Omit the `tachikoma-issue` line for local/remote mode runs (no linked issue).
   - Print the PR URL. Capture for Step 7.
+  - Register pending cleanup: append an entry to `~/projects/personal-nix/wiki/pending-pr-cleanups.yml`:
+    ```yaml
+    - pr_url: <PR_URL>
+      slug: <SLUG>
+      issue: <org/repo#N>   # omit key entirely if not --issue mode
+      added: <YYYY-MM-DD>
+    ```
+    The `tachikoma-cleanup` workflow checks this file hourly and deletes the work-request + closes the issue when the PR merges. Commit + push this change to `personal-nix` (`git -C ~/projects/personal-nix commit -am "chore: register pending cleanup for <SLUG>" && git -C ~/projects/personal-nix push`).
 - On no: skip; user can do it manually later.
 
 For any run with a linked `github_issue` (applies regardless of whether a PR was opened):
@@ -503,7 +517,11 @@ Derive the work-request slug by stripping the `tachikoma/` prefix from `TACHIKOM
 SLUG = TACHIKOMA_BRANCH.removePrefix("tachikoma/")
 ```
 
-Check if `~/projects/personal-nix/wiki/work-requests/<SLUG>.md` exists. If it does, invoke `/work-queue done <SLUG>` to delete it. If it doesn't, skip silently — not every tachikoma run originates from the work queue.
+Check if `~/projects/personal-nix/wiki/work-requests/<SLUG>.md` exists. If it doesn't, skip silently — not every tachikoma run originates from the work queue.
+
+If it does:
+- **PR was opened in Step 6**: skip deletion. The `tachikoma-cleanup` GitHub Actions workflow in `personal-nix` will delete it when the PR merges on GitHub.
+- **No PR was opened**: invoke `/work-queue done <SLUG>` to delete it immediately.
 
 **If user bails mid-Phase-6** (says no at Step 4): exit cleanly. State is recoverable — `<WORKTREE_PATH>/.tachikoma/outcome=complete` stays, so `/tachikoma done` works again later. Phase 6 is idempotent; re-entering picks up where they left off. Steps that already happened (already-merged, already-pushed) are detected by re-running the same probe (e.g. `git log <BASE_BRANCH>..<TACHIKOMA_BRANCH>` empty → already merged → skip to Step 5).
 

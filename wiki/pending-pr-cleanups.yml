@@ -16,3 +16,7 @@ entries: []
   slug: issue-68-issue-5-repair-schema-migration
   issue: MioMarker/major#68
   added: 2026-05-10
+- pr_url: https://github.com/MioMarker/major/pull/77
+  slug: issue-67-issue-3-outbound-extract-shared
+  issue: MioMarker/major#67
+  added: 2026-05-10
