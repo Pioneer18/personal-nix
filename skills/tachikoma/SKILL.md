@@ -823,6 +823,7 @@ Today's full detail format. For the matched worktree, gather:
 - Cap and iter-progress: scan `<wt>/.tachikoma/run.log` for the most recent `==================== iter N / M ====================` line
 - Last milestone banner: scan `<wt>/.tachikoma/run.log` for the most recent `✓ MILESTONE` block (5 lines), or `⚠ BLOCKER`, or the final `🏁 TACHIKOMA COMPLETE` / `⏱ CAP HIT` banner if present
 - Last progress note: tail of `<wt>/.tachikoma/progress.txt` (most recent `## Iter N` block)
+- Last 15 lines of `<wt>/.tachikoma/ship.log` **only if that file exists** (most recent ship-phase output — surfaces why auto-ship failed without the user having to `cat` the file)
 - Last 15 lines of `<wt>/.tachikoma/run.log` for raw context
 
 Output:
@@ -841,7 +842,10 @@ Last milestone:
 Last progress note:
   <copy the most recent ## Iter N block from progress.txt>
 
-Recent log (last 15 lines):
+Last ship attempt (last 15 lines):    # include this section ONLY when .tachikoma/ship.log exists; otherwise omit it entirely (no empty placeholder, no header)
+  <tail of ship.log>
+
+Recent log (last 15 lines):           # omit this section when .tachikoma/ship.log exists — the ship phase tees its output into run.log too, so the ship.log tail subsumes it and dropping run.log here keeps the view under ~40 lines
   <tail of run.log>
 
 ────────────────────────────────────────────────────
