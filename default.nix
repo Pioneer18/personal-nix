@@ -72,7 +72,7 @@ WRAPPER
     chmod +x "$HOME/.local/bin/tachikoma-ui-start"
   '';
 
-  launchd.user.agents.tachikoma-ui = {
+  launchd.agents.tachikoma-ui = {
     serviceConfig = {
       ProgramArguments = [ "${config.home.homeDirectory}/.local/bin/tachikoma-ui-start" ];
       RunAtLoad = true;
