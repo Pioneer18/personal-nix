@@ -27,12 +27,12 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 
 | Form | Behavior |
 |---|---|
-| `/tachikoma` | Plan + run. Mode (existing-issue / local / remote-greenfield) is chosen via two grill questions in preflight. Creates a new sibling worktree, scaffolds in it, launches loop. |
+| `/tachikoma` | **Always starts a new task.** Mode (existing-issue / local / remote-greenfield) is chosen via two grill questions in preflight. Creates a new sibling worktree, scaffolds in it, launches loop. Existing completed or interrupted worktrees in the repo are not a blocker — use `/tachikoma done` or `/tachikoma resume` to act on those. |
 | `/tachikoma --remote` | **Fast-path** for remote-greenfield mode — skips the mode-selection grill questions. PRD → `to-prd` → `to-issues` → auto-promoted to `ready-for-agent`. New worktree per run. |
 | `/tachikoma --issue <ref>` | **Fast-path** for existing-issue mode — skips the mode-selection grill questions. Uses a GitHub issue body as the PRD; loop scoped to that single issue. New worktree per run. |
 | `/tachikoma 138` or `/tachikoma #138` | **Shorthand** — a bare integer or `#N` as the first positional arg is normalized to `/tachikoma --issue <N>`. Same fast-path behavior, same preconditions (7, 8). |
-| `/tachikoma done` (optionally `<slug>`) | **Manual fallback for failed auto-ship** — auto-ship runs automatically after AFK completion (see Ship phase below), so this is only needed when that fails or for `--once` mode recovery. With `<slug>`, picks that specific completed worktree; otherwise picker if multiple complete, auto-pick if one. Auto-triggered when `/tachikoma` (no args) is run with a single completed worktree in the repo. |
-| `/tachikoma resume` (optionally `<slug>`) | Re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. Auto-offered when `/tachikoma` (no args) is run with recoverable state. |
+| `/tachikoma done` (optionally `<slug>`) | **Manual fallback for failed auto-ship** — auto-ship runs automatically after AFK completion (see Ship phase below), so this is only needed when that fails or for `--once` mode recovery. With `<slug>`, picks that specific completed worktree; otherwise picker if multiple complete, auto-pick if one. |
+| `/tachikoma resume` (optionally `<slug>`) | **Explicit entry point** for recover phase — re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. |
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all tachikoma worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a tachikoma worktree. Picker if >1 running. `--all` halts every running tachikoma in the repo. |
 | `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full Phases 1–6 per item, batch preferences set once up front. With `<slug>`: run a single specific queue item. With `--caffeinated` (alias `-C`): prevent macOS sleep for the entire session by wrapping each item's launch with `caffeinate -d`. |
@@ -155,16 +155,21 @@ All refusal messages use this format:
    ```
 
    Routing depends on what the user just typed:
-   - `/tachikoma` (no args) with **one** completed worktree → ship phase on it.
-   - `/tachikoma` (no args) with **one** interrupted/recoverable worktree → recover phase on it.
-   - `/tachikoma` (no args) with **multiple** terminal worktrees → present picker; let user choose which to act on.
-   - `/tachikoma` (no args) with only RUNNING worktrees → print:
+   - `/tachikoma` (with or without `--remote` / `--issue <ref>` / positional issue ref) — **always starts a new task**. Existing completed, interrupted, or running worktrees are NOT a blocker. Proceed to preflight. Use `/tachikoma done` or `/tachikoma resume` if the intent was to act on a prior worktree.
+   - `/tachikoma done` (optionally `<slug>`) with **one** completed worktree → ship phase on it.
+   - `/tachikoma done` (optionally `<slug>`) with **multiple** completed worktrees → present picker; let user choose which to ship.
+   - `/tachikoma done` with **no** completed worktrees → print:
      ```
-     ✗ <N> Tachikoma(s) already running — no completed runs to act on.
-       → /tachikoma status   to see them
-       → /tachikoma stop     to halt one
+     ✗ No completed Tachikoma runs to ship.
+       → /tachikoma status   to see what's in this repo
      ```
-   - `/tachikoma <new-args>` (start a new run) — terminal worktrees are NOT a blocker. Proceed to preflight.
+   - `/tachikoma resume` (optionally `<slug>`) with **one** interrupted/recoverable worktree → recover phase on it.
+   - `/tachikoma resume` (optionally `<slug>`) with **multiple** recoverable worktrees → present picker; let user choose which to recover.
+   - `/tachikoma resume` with **no** recoverable worktrees → print:
+     ```
+     ✗ No interrupted Tachikoma runs to resume.
+       → /tachikoma status   to see what's in this repo
+     ```
    - Pure stale clutter (`.tachikoma/` with nothing meaningful) — ignore unless user is explicitly acting on that worktree.
 
 ## Setup: label vocabulary
@@ -752,9 +757,7 @@ After Step 9, print the completion footer:
 
 ## Recover: interrupted run
 
-Triggered when:
-- Precondition 10 detects an interruptable worktree: `.tachikoma/outcome ∈ {cap, error, stopped}` OR a stale lockfile (PID dead).
-- User runs `/tachikoma resume` explicitly (optionally `/tachikoma resume <slug>`).
+Triggered when the user runs `/tachikoma resume` (optionally `/tachikoma resume <slug>`). Bare `/tachikoma` never routes here — it always starts a new task.
 
 **Step 0 — Pick the worktree.**
 
@@ -798,7 +801,7 @@ Capture: `WORKTREE_PATH`, `TACHIKOMA_BRANCH`, `BASE_BRANCH` (read `<WORKTREE_PAT
   ```
 - **`stopped` (deliberate Ctrl+C)**: jump directly to ship phase with `WORKTREE_PATH` pre-selected. Treat whatever was committed as complete enough.
 
-Only surface to the user if the user explicitly runs `/tachikoma resume` — in that case offer the three manual paths (Resume / ship phase / Restart) as before, since the user is actively choosing to intervene.
+Since recover phase is only reached via explicit `/tachikoma resume`, always offer the three manual paths (Resume / ship phase / Restart) — the user is actively choosing to intervene.
 
 ## Subcommand: `/tachikoma status` (alias `/tachikoma t`)
 
