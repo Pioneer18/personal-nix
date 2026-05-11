@@ -1,42 +1,36 @@
 {
-  "goal": "Write the 5 missing frontend files that complete the Tachikoma local web UI",
+  "goal": "Declare the Tachikoma UI as a launchd user agent in default.nix so it auto-starts on login at localhost:4000",
   "quality_bar": "prototype",
+  "files_in_scope": ["default.nix"],
+  "files_out_of_scope": ["mcp.nix", "packages.nix", "flake.nix", "flake.lock", "mcps/**"],
   "tasks": [
     {
       "id": "task-1",
-      "title": "Write src/index.css — Tailwind directives + dark base + custom scrollbar",
-      "status": "done",
-      "description": "Create mcps/tachikoma-ui/src/index.css with @tailwind base/components/utilities directives, html { background: #09090b; }, and webkit scrollbar styles (thin, zinc-700 thumb) for dark theme."
+      "title": "Add home.activation.buildTachikomaUI to default.nix",
+      "status": "open",
+      "description": "Add activation step that runs npm install + npm run build in mcps/tachikoma-ui/, non-fatal on failure."
     },
     {
       "id": "task-2",
-      "title": "Write src/main.tsx — React 18 entry point",
-      "status": "done",
-      "description": "Create mcps/tachikoma-ui/src/main.tsx: import React, ReactDOM, App, index.css. createRoot(document.getElementById('root')!). document.documentElement.classList.add('dark'). root.render(<React.StrictMode><App /></React.StrictMode>)."
+      "title": "Add home.activation.writeTachikomaUILauncher to default.nix",
+      "status": "open",
+      "description": "Add activation step that writes ~/.local/bin/tachikoma-ui-start: sources ~/.secrets, execs node --experimental-strip-types .../server/index.ts. chmod +x."
     },
     {
       "id": "task-3",
-      "title": "Write src/components/LogDrawer.tsx — SSE log panel",
-      "status": "done",
-      "description": "Create LogDrawer component: fixed right panel (40vw), BMO face img from /api/bmo/{bmoFace}.png, ScrollArea from @radix-ui/react-scroll-area, auto-scroll on new lines, Escape key close, streaming status footer. Props: slug, onClose, tachikomas."
+      "title": "Declare launchd.user.agents.tachikoma-ui in default.nix",
+      "status": "open",
+      "description": "Add launchd user agent with ProgramArguments pointing to the launcher script, RunAtLoad=true, KeepAlive=true, log paths at /tmp/tachikoma-ui.log."
     },
     {
       "id": "task-4",
-      "title": "Write src/components/ChatBar.tsx — streaming chat input",
-      "status": "done",
-      "description": "Create ChatBar component: fixed bottom bar, message history with greeting, SSE streaming POST /api/chat, action buttons (dispatch/stop/abandon), textarea with Enter-to-send and auto-resize."
-    },
-    {
-      "id": "task-5",
-      "title": "Write src/App.tsx — root layout composing all components",
-      "status": "done",
-      "description": "Create App.tsx: useStatus hook, selectedSlug state, full-viewport flex-col layout with header, main content (WorkQueue + ActiveCards), LogDrawer right panel, ChatBar fixed bottom. Pass onCardClick to ActiveCards, onClose to LogDrawer."
-    },
-    {
-      "id": "task-6",
-      "title": "Verify: tsc --noEmit and npm run build pass",
-      "status": "done",
-      "description": "Run cd mcps/tachikoma-ui && npm install && npx tsc --noEmit, then npm run build. Fix any TypeScript errors. Emit sentinel when both pass."
+      "title": "Verify nix eval --impure .#homeConfigurations exits without errors",
+      "status": "open",
+      "description": "Run: cd ~/projects/personal-nix && nix eval --impure .#homeConfigurations 2>&1 | head -40. Fix any nix syntax or attribute errors."
     }
-  ]
+  ],
+  "feedback_loops": [
+    "cd ~/projects/personal-nix && nix eval --impure .#homeConfigurations 2>&1 | head -40"
+  ],
+  "stop_condition": "All 4 tasks done and nix eval exits cleanly"
 }

@@ -46,4 +46,39 @@ in {
           || echo "personal-nix: secrets-from-keychain.sh reported missing items (see warnings above)"
       fi
     '';
+
+  home.activation.buildTachikomaUI =
+    lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      TACHIKOMA_UI="$HOME/projects/personal-nix/mcps/tachikoma-ui"
+      if [ -d "$TACHIKOMA_UI" ]; then
+        echo "personal-nix: building tachikoma-ui..."
+        cd "$TACHIKOMA_UI"
+        npm install --quiet 2>/dev/null || echo "personal-nix: npm install failed (non-fatal)"
+        npm run build 2>/dev/null || echo "personal-nix: npm run build failed (non-fatal)"
+      fi
+    '';
+
+  home.activation.writeTachikomaUILauncher =
+    lib.hm.dag.entryAfter [ "writeBoundary" "buildTachikomaUI" ] ''
+      mkdir -p "$HOME/.local/bin"
+      cat > "$HOME/.local/bin/tachikoma-ui-start" << 'WRAPPER'
+#!/bin/bash
+set -a
+[ -f "$HOME/.secrets" ] && . "$HOME/.secrets"
+set +a
+exec ${pkgs.nodejs_22}/bin/node --experimental-strip-types \
+  "$HOME/projects/personal-nix/mcps/tachikoma-ui/server/index.ts"
+WRAPPER
+    chmod +x "$HOME/.local/bin/tachikoma-ui-start"
+  '';
+
+  launchd.user.agents.tachikoma-ui = {
+    serviceConfig = {
+      ProgramArguments = [ "${config.home.homeDirectory}/.local/bin/tachikoma-ui-start" ];
+      RunAtLoad = true;
+      KeepAlive = true;
+      StandardOutPath = "/tmp/tachikoma-ui.log";
+      StandardErrorPath = "/tmp/tachikoma-ui.log";
+    };
+  };
 }
