@@ -73,7 +73,8 @@ WRAPPER
   '';
 
   launchd.agents.tachikoma-ui = {
-    serviceConfig = {
+    enable = true;
+    config = {
       ProgramArguments = [ "${config.home.homeDirectory}/.local/bin/tachikoma-ui-start" ];
       RunAtLoad = true;
       KeepAlive = true;
