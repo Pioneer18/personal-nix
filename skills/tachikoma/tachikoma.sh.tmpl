@@ -15,28 +15,41 @@ PID_FILE="$REPO/.tachikoma/run.pid"
 OUTCOME_FILE="$REPO/.tachikoma/outcome"
 SHIP_PROMPT_FILE="$REPO/.tachikoma/ship.md"
 SHIP_LOG_FILE="$REPO/.tachikoma/ship.log"
+ITER_TMP="$REPO/.tachikoma/.iter.tmp"
 
 usage() {
   cat <<EOF
-Usage: tachikoma.sh --once
-       tachikoma.sh --afk N
+Usage: tachikoma.sh [--dev] --once
+       tachikoma.sh [--dev] --afk N
+
+  --once      Run one iteration then stop.
+  --afk N     Run up to N iterations (max 50).
+  --dev       Dev mode: stream all claude output to the terminal.
+              Default (light mode): only structured progress banners are shown.
 EOF
   exit 1
 }
 
-[ $# -ge 1 ] || usage
+VERBOSE=0
+MODE=""
+MAX_ITER=0
 
-MODE="$1"
-case "$MODE" in
-  --once) MAX_ITER=1 ;;
-  --afk)
-    [ $# -ge 2 ] || usage
-    MAX_ITER="$2"
-    case "$MAX_ITER" in (*[!0-9]*|"") echo "afk N must be a positive integer" >&2; exit 1 ;; esac
-    [ "$MAX_ITER" -le 50 ] || { echo "afk cap exceeds hard ceiling 50" >&2; exit 1; }
-    ;;
-  *) usage ;;
-esac
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dev)  VERBOSE=1; shift ;;
+    --once) MODE="once"; MAX_ITER=1; shift ;;
+    --afk)
+      MODE="afk"
+      [[ "${2:-}" =~ ^[0-9]+$ ]] || { echo "afk N must be a positive integer" >&2; exit 1; }
+      MAX_ITER="$2"
+      [ "$MAX_ITER" -le 50 ] || { echo "afk cap exceeds hard ceiling 50" >&2; exit 1; }
+      shift 2
+      ;;
+    *) usage ;;
+  esac
+done
+
+[[ -n "$MODE" ]] || usage
 
 cd "$REPO"
 
@@ -64,9 +77,7 @@ if [ -f "$PID_FILE" ]; then
 fi
 echo $$ > "$PID_FILE"
 
-# Self-heal base_branch metadata if Phase 3 scaffold missed it. tachikoma_status
-# and the merge tooling both read this file; missing it makes worktree merges
-# target the wrong branch.
+# Self-heal base_branch metadata if Phase 3 scaffold missed it.
 BASE_BRANCH_FILE="$REPO/.tachikoma/base_branch"
 if [ ! -f "$BASE_BRANCH_FILE" ]; then
   git rev-parse --abbrev-ref HEAD > "$BASE_BRANCH_FILE"
@@ -79,10 +90,7 @@ OUTCOME="unknown"
 ITER=0
 
 cleanup() {
-  # Order matters: rm PID first so tachikoma_status sees the run as done,
-  # then write outcome so observers reading after PID-clear see the final
-  # state, then notify (which may block briefly on osascript).
-  rm -f "$PID_FILE"
+  rm -f "$PID_FILE" "$ITER_TMP"
   echo "$OUTCOME" > "$OUTCOME_FILE"
   notify "$OUTCOME" "$ITER"
 }
@@ -108,13 +116,35 @@ notify() {
   local iters="$2"
   local title="Tachikoma $outcome"
   local body="repo: $(basename "$REPO") · iters: $iters/$MAX_ITER · branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
-  # Fire-and-forget: detach osascript in a subshell so a stalled notification
-  # daemon can't keep this process alive after the EXIT trap runs.
   if command -v osascript >/dev/null 2>&1; then
     ( osascript -e "display notification \"$body\" with title \"$title\"" >/dev/null 2>&1 & ) || true
   fi
   printf '\a' >&2 || true
   echo "[tachikoma] $outcome — $body" | tee -a "$LOG_FILE" >&2
+}
+
+# run_claude <prompt_file> <log_file> [extra_tools]
+# Runs claude -p. Light mode: output to log only. Dev mode: also streams to terminal.
+# Writes output to ITER_TMP. Sets CLAUDE_RC to claude's exit code.
+run_claude() {
+  local prompt_file="$1"
+  local log_file="$2"
+  local tools="${3:-$ALLOWED_TOOLS}"
+
+  set +e
+  if [ "$VERBOSE" = "1" ]; then
+    claude -p "$(cat "$prompt_file")" \
+      --allowed-tools "$tools" \
+      --add-dir "$REPO" \
+      2>&1 | tee -a "$log_file" | tee "$ITER_TMP"
+  else
+    claude -p "$(cat "$prompt_file")" \
+      --allowed-tools "$tools" \
+      --add-dir "$REPO" \
+      2>&1 | tee -a "$log_file" > "$ITER_TMP"
+  fi
+  CLAUDE_RC=${PIPESTATUS[0]}
+  set -e
 }
 
 trap cleanup EXIT
@@ -134,7 +164,7 @@ esac
   echo ""
   echo "$RULE_MAIN"
   echo "  $SYM_START starting — repo: $(basename "$REPO") · branch: $BRANCH"
-  echo "  cap: $MAX_ITER iter(s) · pid: $$"
+  echo "  cap: $MAX_ITER iter(s) · pid: $$${VERBOSE:+  · mode: dev}"
   echo "$RULE_MAIN"
   echo ""
 } | tee "$LOG_FILE"
@@ -142,23 +172,17 @@ esac
 for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
   echo "$RULE_ITER $ITER / $MAX_ITER ─────────────────────────────────────" | tee -a "$LOG_FILE"
 
-  # Bail if working tree is dirty at iteration start — previous iteration
-  # left something half-done. `git status --porcelain` is unborn-HEAD safe.
+  # Bail if working tree is dirty at iteration start.
   if [ -n "$(git status --porcelain)" ]; then
     echo "[tachikoma] working tree dirty at start of iter $ITER. Bailing — manual cleanup required." | tee -a "$LOG_FILE" >&2
     OUTCOME="error"
     exit 1
   fi
 
-  # Single iteration. Stream output to both stdout and the log.
-  # Note: --print/-p makes claude headless. --allowed-tools narrows blast radius.
-  set +e
-  RESULT="$(claude -p "$(cat "$PROMPT_FILE")" \
-              --allowed-tools "$ALLOWED_TOOLS" \
-              --add-dir "$REPO" \
-              2>&1 | tee -a "$LOG_FILE")"
-  RC=$?
-  set -e
+  run_claude "$PROMPT_FILE" "$LOG_FILE"
+  RC=$CLAUDE_RC
+  RESULT="$(cat "$ITER_TMP" 2>/dev/null || true)"
+  rm -f "$ITER_TMP"
 
   if [ $RC -ne 0 ]; then
     {
@@ -184,9 +208,6 @@ for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
     } | tee -a "$LOG_FILE"
     OUTCOME="complete"
 
-    # Auto-ship: run merge + PR + cleanup via a fresh claude -p call.
-    # Falls back gracefully — if ship fails, the work is still committed on
-    # the tachikoma branch and the user can run /tachikoma done manually.
     if [ -f "$SHIP_PROMPT_FILE" ]; then
       {
         echo ""
@@ -194,13 +215,12 @@ for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
         echo ""
       } | tee -a "$LOG_FILE"
 
-      set +e
-      claude -p "$(cat "$SHIP_PROMPT_FILE")" \
-        --allowed-tools "Bash(git *) Bash(gh *) Bash(osascript *) Bash(cat *) Bash(echo *) Bash(rm *) Bash(mkdir *) Read Write Edit" \
-        --add-dir "$REPO" \
-        2>&1 | tee -a "$SHIP_LOG_FILE" "$LOG_FILE"
-      SHIP_RC=$?
-      set -e
+      SHIP_TOOLS="Bash(git *) Bash(gh *) Bash(osascript *) Bash(cat *) Bash(echo *) Bash(rm *) Bash(mkdir *) Read Write Edit"
+      run_claude "$SHIP_PROMPT_FILE" "$LOG_FILE" "$SHIP_TOOLS"
+      # also capture to ship log
+      cat "$ITER_TMP" 2>/dev/null >> "$SHIP_LOG_FILE" || true
+      SHIP_RC=$CLAUDE_RC
+      rm -f "$ITER_TMP"
 
       if [ $SHIP_RC -ne 0 ]; then
         {

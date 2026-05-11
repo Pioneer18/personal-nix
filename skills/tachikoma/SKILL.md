@@ -466,6 +466,24 @@ The `agent-running` label is the distributed claim signal. A concurrent Tachikom
 
 The orchestrator's cwd doesn't matter — both modes `cd` into `<WORKTREE_PATH>` first.
 
+### Log modes: light (default) vs dev (`--dev`)
+
+By default the script runs in **light mode**: only structured progress banners print to the terminal; all raw claude output goes to `.tachikoma/run.log`. This keeps queue-drain output readable — one banner per iteration milestone.
+
+Pass `--dev` before the mode flag to enable **dev mode**: claude's full output streams to the terminal in addition to the log. Use this when debugging a single item.
+
+```bash
+# light (default) — progress banners only
+cd <WORKTREE_PATH> && .tachikoma/tachikoma.sh --once
+
+# dev — full streaming output
+cd <WORKTREE_PATH> && .tachikoma/tachikoma.sh --dev --once
+```
+
+The `--dev` flag works with both `--once` and `--afk N`. The queue drain never passes `--dev`; it always runs light.
+
+---
+
 ### `--once`
 Run via Bash tool in foreground:
 ```bash
