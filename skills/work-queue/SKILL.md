@@ -109,18 +109,20 @@ Run `/work-queue grab <slug>` to prep it for tachikoma, or `/work-queue list` to
 6. Output format:
 
    ```
-   Open (2)
-     fix-vital-age           — ~/projects/platform                       READY
-     refactor-auth-middleware — target_repo missing                       NOT READY
+   ## Work Queue
 
-   Grabbed (1)
-     wire-up-feature-flags    — ~/projects/platform                       (since 2026-05-08)
-
-   Needs Triage (1)
-     flaky-cron-cleanup       — ~/projects/platform   2 failures          (since 2026-05-09)
+   | Slug | Target | Status | Notes |
+   |---|---|---|---|
+   | fix-vital-age | ~/projects/platform | open | READY |
+   | refactor-auth-middleware | ~/projects/platform | open | NOT READY: target_repo missing |
+   | wire-up-feature-flags | ~/projects/platform | grabbed | since 2026-05-08 |
+   | flaky-cron-cleanup | ~/projects/platform | needs-triage | 2 failures · since 2026-05-09 |
    ```
 
-   Keep total output under ~30 lines. Always show every `needs-triage` entry in full — they require human attention. Done items don't appear (files are deleted on done).
+   - Use a single flat table — all statuses in one view, no section breaks.
+   - Status column values: `open`, `grabbed`, `needs-triage`.
+   - Notes column: for `open` show `READY` or `NOT READY: <reason>`; for `grabbed` show `since <last_updated>`; for `needs-triage` show `<N> failures · since <last_updated>`.
+   - Keep total output under ~30 lines. Done items don't appear (files are deleted on done).
 
 ## grab flow
 

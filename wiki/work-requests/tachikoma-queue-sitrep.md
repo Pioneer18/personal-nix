@@ -1,5 +1,5 @@
 ---
-status: open
+status: grabbed
 target_repo: ~/projects/personal-nix
 github_issue: ""
 failure_count: 0

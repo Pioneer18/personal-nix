@@ -20,3 +20,7 @@ entries: []
   slug: issue-67-issue-3-outbound-extract-shared
   issue: MioMarker/major#67
   added: 2026-05-10
+- pr_url: https://github.com/MioMarker/major/pull/94
+  slug: issue-65-issue-1-inbound-implement-adr-0
+  issue: MioMarker/major#65
+  added: 2026-05-11
