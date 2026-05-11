@@ -435,15 +435,16 @@ The `agent-running` label is the distributed claim signal. A concurrent Tachikom
    - Render `<WORKTREE_PATH>/.tachikoma/prompt.md` from [prompt.md.tmpl](prompt.md.tmpl).
    - Write `<WORKTREE_PATH>/.tachikoma/base_branch` — single line containing `<ISSUE_BRANCH>`. ship phase reads this to know the squash-merge target. (Conversation context isn't enough — AFK runs span sessions.)
    - Write `<WORKTREE_PATH>/.tachikoma/pr_target_branch` — single line containing `<PR_TARGET_BRANCH>`. ship phase reads this to know what branch to open the PR against.
+   - Write `<WORKTREE_PATH>/.tachikoma/ship_body.txt` — the full PR body verbatim (see ship phase Step 6 for required content). Written as a plain file so ship phase can pass `--body-file` to `gh pr create`, avoiding shell-escaping a multi-line string.
    - Render `<WORKTREE_PATH>/.tachikoma/ship.md` from [ship.md.tmpl](ship.md.tmpl). Substitute all placeholders:
      - `{{WORKTREE_PATH}}`, `{{TACHIKOMA_BRANCH}}`, `{{BASE_BRANCH}}`, `{{PR_TARGET_BRANCH}}`, `{{SLUG}}`
      - `{{REPO_OWNER_NAME}}` — `gh repo view --json nameWithOwner --jq .nameWithOwner` (or empty for local mode)
      - `{{GITHUB_ISSUE_LINE}}` — `Issue: <org/repo>#<N>` for `--issue` mode; empty otherwise
      - `{{COMMIT_MESSAGE}}` — `<issue-title> (#<N>)\n\nCloses #<N>` for `--issue` mode; goal summary for local/remote
      - `{{PR_TITLE}}` — issue title for `--issue` mode; goal summary otherwise
-     - `{{PR_BODY_ESCAPED}}` — the full PR body (see ship phase Step 6 for required content), with internal double-quotes escaped for shell safety
      - `{{ISSUE_LABEL_BLOCK}}` — for issue-linked runs: the Step 6 label-update instructions (`gh issue edit ... --add-label ready-for-review --remove-label agent-running`); empty for local/remote
      - `{{ISSUE_CLOSE_BLOCK}}` — for `--issue` mode: the Step 7 close-issue instructions; empty otherwise
+   - The PR body is no longer a placeholder — `ship.md.tmpl` references `.tachikoma/ship_body.txt` via `--body-file`, so no escaping is required.
    - In **local** mode only: write `<WORKTREE_PATH>/plans/prd.json`.
 
 6. **Commit the scaffolding inside the worktree** so the loop's first iteration has a clean tree. Use `git -C <WORKTREE_PATH>`:
@@ -1213,7 +1214,7 @@ If zero issues remain (everything closed or resolved): print `✓ Queue clear �
 
 - [tachikoma.sh.tmpl](tachikoma.sh.tmpl) — the bash loop. Placeholders: `{{ALLOWED_TOOLS}}`, `{{SENTINEL}}`, `{{REPO_PATH}}`.
 - [prompt.md.tmpl](prompt.md.tmpl) — the per-iteration prompt. Placeholders: `{{GOAL}}`, `{{QUALITY_BAR_PARAGRAPH}}`, `{{FILES_IN_SCOPE}}`, `{{FILES_OUT_OF_SCOPE}}`, `{{STOP_CONDITION}}`, `{{TASK_SOURCE_BLOCK}}`, `{{TYPECHECK_CMD}}`, `{{TEST_CMD}}`, `{{LINT_CMD}}`, `{{COMMIT_INSTRUCTIONS}}`, `{{COMPLETION_INSTRUCTIONS}}`.
-- [ship.md.tmpl](ship.md.tmpl) — the auto-ship prompt, run by `tachikoma.sh` via `claude -p` after the sentinel is detected. Placeholders: `{{WORKTREE_PATH}}`, `{{TACHIKOMA_BRANCH}}`, `{{BASE_BRANCH}}`, `{{PR_TARGET_BRANCH}}`, `{{SLUG}}`, `{{REPO_OWNER_NAME}}`, `{{GITHUB_ISSUE_LINE}}`, `{{COMMIT_MESSAGE}}`, `{{PR_TITLE}}`, `{{PR_BODY_ESCAPED}}`, `{{ISSUE_LABEL_BLOCK}}`, `{{ISSUE_CLOSE_BLOCK}}`.
+- [ship.md.tmpl](ship.md.tmpl) — the auto-ship prompt, run by `tachikoma.sh` via `claude -p` after the sentinel is detected. Placeholders: `{{WORKTREE_PATH}}`, `{{TACHIKOMA_BRANCH}}`, `{{BASE_BRANCH}}`, `{{PR_TARGET_BRANCH}}`, `{{SLUG}}`, `{{REPO_OWNER_NAME}}`, `{{GITHUB_ISSUE_LINE}}`, `{{COMMIT_MESSAGE}}`, `{{PR_TITLE}}`, `{{ISSUE_LABEL_BLOCK}}`, `{{ISSUE_CLOSE_BLOCK}}`. The PR body is read at ship time from `.tachikoma/ship_body.txt` (written during scaffold) via `gh pr create --body-file`, so no escaping is required.
 - [AGENT-BRIEF.tmpl](AGENT-BRIEF.tmpl) — remote-mode agent brief comment, posted as a GitHub issue comment after `to-issues` promotes child issues. Placeholders: `{{CATEGORY}}`, `{{SUMMARY}}`, `{{CURRENT_BEHAVIOR}}`, `{{DESIRED_BEHAVIOR}}`, `{{KEY_INTERFACES}}`, `{{ACCEPTANCE_CRITERIA}}`, `{{OUT_OF_SCOPE}}`, `{{QUALITY_BAR}}`. Fill from grill answers + issue body content. Used in both `--remote` and `--issue` modes.
 
 ## Rendering `{{ALLOWED_TOOLS}}` (required, exact format)
