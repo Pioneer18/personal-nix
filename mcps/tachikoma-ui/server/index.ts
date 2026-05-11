@@ -2,7 +2,7 @@
 import express from "express";
 import cors from "cors";
 import path from "path";
-import { existsSync, readFileSync, statSync, watch } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import { execSync } from "child_process";
 import os from "os";
 import {
