@@ -27,18 +27,18 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 
 | Form | Behavior |
 |---|---|
-| `/tachikoma` | Plan + run. Mode (existing-issue / local / remote-greenfield) is chosen via two grill questions in Phase 1. Creates a new sibling worktree, scaffolds in it, launches loop. |
+| `/tachikoma` | Plan + run. Mode (existing-issue / local / remote-greenfield) is chosen via two grill questions in preflight. Creates a new sibling worktree, scaffolds in it, launches loop. |
 | `/tachikoma --remote` | **Fast-path** for remote-greenfield mode — skips the mode-selection grill questions. PRD → `to-prd` → `to-issues` → auto-promoted to `ready-for-agent`. New worktree per run. |
 | `/tachikoma --issue <ref>` | **Fast-path** for existing-issue mode — skips the mode-selection grill questions. Uses a GitHub issue body as the PRD; loop scoped to that single issue. New worktree per run. |
 | `/tachikoma 138` or `/tachikoma #138` | **Shorthand** — a bare integer or `#N` as the first positional arg is normalized to `/tachikoma --issue <N>`. Same fast-path behavior, same preconditions (7, 8). |
-| `/tachikoma done` (optionally `<slug>`) | Manually trigger Phase 6. With `<slug>`, picks that specific completed worktree; otherwise picker if multiple complete, auto-pick if one. Auto-triggered when `/tachikoma` (no args) is run with a single completed worktree in the repo. |
+| `/tachikoma done` (optionally `<slug>`) | Manually trigger ship phase. With `<slug>`, picks that specific completed worktree; otherwise picker if multiple complete, auto-pick if one. Auto-triggered when `/tachikoma` (no args) is run with a single completed worktree in the repo. |
 | `/tachikoma resume` (optionally `<slug>`) | Re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. Auto-offered when `/tachikoma` (no args) is run with recoverable state. |
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all tachikoma worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a tachikoma worktree. Picker if >1 running. `--all` halts every running tachikoma in the repo. |
 | `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue sequentially — full Phases 1–6 per item, batch preferences set once up front. With `<slug>`: run a single specific queue item. With `--caffeinated` (alias `-C`): prevent macOS sleep for the entire session by wrapping each item's launch with `caffeinate -d`. |
 | `/tachikoma queue <repo>` | Queue-drain mode sourced from GitHub. Fetches all `ready-for-agent AND NOT agent-running` issues from `<repo>` (format: `org/repo`), auto-creates linked work_requests for any without one, then runs the normal queue drain (Phases 1–6 per item). Ends with a HITL notification when no `ready-for-agent` issues remain. |
 
-`--remote` and `--issue <ref>` are **fast-paths**, not requirements — bare `/tachikoma` collects the same answers via two grill questions in Phase 1 (existing issue? then, if not, local-or-remote?). Use the flags when you already know the mode and want to skip those questions; either flow lands in the same Phase 2/3 logic.
+`--remote` and `--issue <ref>` are **fast-paths**, not requirements — bare `/tachikoma` collects the same answers via two grill questions in preflight (existing issue? then, if not, local-or-remote?). Use the flags when you already know the mode and want to skip those questions; either flow lands in the same plan phase/3 logic.
 
 `<ref>` accepts: `#138`, `138`, or `org/repo#138`. The `org/repo` form must match the cwd repo's `nameWithOwner`; if not, refuse and tell the user to `cd` first.
 
@@ -50,22 +50,97 @@ Multiple tachikomas can run concurrently in the same repo (in separate worktrees
 
 ## Preconditions (refuse with explanation if violated)
 
-1. cwd must be inside a git repo (`git rev-parse --git-dir`).
-2. Repo must have at least one commit (`git rev-parse HEAD` succeeds). Unborn repo = refuse; tell user to `git commit --allow-empty -m init` first. Without this, the loop's dirty-tree check, `git log` references, and squash-merge guidance all break.
+All refusal messages use this format:
+```
+✗ <what went wrong>
+  → <exact next step>
+```
+
+1. cwd must be inside a git repo (`git rev-parse --git-dir`). On failure:
+   ```
+   ✗ Not inside a git repository.
+     → cd into your project and try again, or run: git init && git commit --allow-empty -m init
+   ```
+
+2. Repo must have at least one commit (`git rev-parse HEAD` succeeds). On failure:
+   ```
+   ✗ Repo has no commits — Tachikoma needs a HEAD to branch from.
+     → git commit --allow-empty -m init
+   ```
+
 3. ~~Working tree must be clean.~~ **Relaxed.** With worktree mode, the tachikoma branch is created off cwd's HEAD via `git worktree add`, which only needs HEAD — the cwd's working tree may be dirty. (The new worktree's working tree is clean by construction.)
-4. **cwd must NOT be an active tachikoma worktree.** Refuse if either is true: (a) `<cwd>/.tachikoma/run.pid` exists and the PID is alive, (b) `git -C <cwd> rev-parse --abbrev-ref HEAD` matches `tachikoma/*`. Reason: branching off a mid-tachikoma state would inherit half-finished commits. Tell user to `cd` to the main repo or a non-tachikoma worktree.
-5. `claude` CLI on PATH (`command -v claude`).
-6. `git worktree` available (Git ≥ 2.5; assume yes on macOS, but verify with `git worktree list` and refuse if it errors).
-7. For `--remote`, `--issue`, and `queue <repo>`: `gh` CLI on PATH and authenticated (`gh auth status`). For `queue <repo>`: additionally, `<repo>` must be a valid `org/repo` string and accessible via `gh repo view <repo>`.
+
+4. **cwd must NOT be an active tachikoma worktree** — *new-run invocations only* (`/tachikoma`, `/tachikoma --issue`, `/tachikoma --remote`, `/tachikoma queue`). Refuse if either is true: (a) `<cwd>/.tachikoma/run.pid` exists and the PID is alive, (b) `git -C <cwd> rev-parse --abbrev-ref HEAD` matches `tachikoma/*`. Reason: branching off a mid-tachikoma state would inherit half-finished commits. **`status`, `stop`, `done`, and `resume` are exempt.** On failure:
+   ```
+   ✗ You're inside an active Tachikoma worktree — can't start a new run from here.
+     → cd <MAIN_REPO>
+   ```
+
+5. `claude` CLI on PATH (`command -v claude`). On failure:
+   ```
+   ✗ `claude` CLI not found on PATH.
+     → Install it: https://claude.ai/code, then re-run.
+   ```
+
+6. `git worktree` available (Git ≥ 2.5). On failure:
+   ```
+   ✗ `git worktree` is not available — Git ≥ 2.5 required.
+     → brew upgrade git
+   ```
+
+7. For `--remote`, `--issue`, and `queue <repo>`: `gh` CLI on PATH and authenticated. On `gh` missing:
+   ```
+   ✗ `gh` CLI not found on PATH — required for GitHub mode.
+     → brew install gh && gh auth login
+   ```
+   On auth failure:
+   ```
+   ✗ `gh` is not authenticated.
+     → gh auth login
+   ```
+   For `queue <repo>`: repo must also be accessible via `gh repo view <repo>`. On failure:
+   ```
+   ✗ Cannot access repo <repo> — check the org/repo format and your GitHub permissions.
+     → gh repo view <repo>
+   ```
+
 8. For `--issue <ref>`:
-   - The issue must exist and be open (`gh issue view <num> --json state,title,body,labels` succeeds and `state == OPEN`). This check applies at **every** invocation, not just first-time — a prior Phase 6 squash-merge can auto-close the issue (via `Closes #N`), and a re-run of `/tachikoma --issue <N>` against the same number must refuse rather than silently re-tachikoma a finished issue. If `state != OPEN`, refuse with: "Issue #N is already closed. Reopen it if you want to tachikoma it again."
-   - The cwd repo's `nameWithOwner` must match the ref's repo (if user passed `org/repo#N`). If mismatch, refuse — `cd` first.
-   - Label vocabulary is **not** a precondition; it is auto-created by Phase 0 (see "Phase 0: label vocabulary setup" below).
-9. **No worktree-path or branch collision.** Compute `WORKTREE_PATH` and `TACHIKOMA_BRANCH` (Phase 3) and check up front:
-   - If `<WORKTREE_PATH>` already exists (file or dir): refuse with the path.
-   - If `git -C <MAIN_REPO> show-ref --verify --quiet refs/heads/<TACHIKOMA_BRANCH>` succeeds: refuse — that branch already exists. Tell user to delete it first or pick a different goal/issue.
-   - For `--issue <N>` re-runs against the same issue: this collision is the expected guard. Tell user to clean up the old worktree (`git worktree remove ...; git branch -D tachikoma/issue-<N>-...`) or finish/abandon the existing run.
-10. **State detection across worktrees.** Some `.tachikoma/` may exist in some worktree of this repo. Enumerate via `git worktree list --porcelain`, then for each worktree check:
+   - The issue must exist and be open. This check applies at **every** invocation — a prior ship phase squash-merge can auto-close via `Closes #N`. On closed issue:
+     ```
+     ✗ Issue #<N> is already closed.
+       → Reopen it on GitHub if you want to Tachikoma it again.
+     ```
+     On issue not found:
+     ```
+     ✗ Issue #<N> not found in <org/repo>.
+       → Check the number and repo, or run: gh issue view <N>
+     ```
+   - The cwd repo's `nameWithOwner` must match the ref's repo (if user passed `org/repo#N`). On mismatch:
+     ```
+     ✗ Issue ref <org/repo#N> doesn't match this repo (<cwd-repo>).
+       → cd into <org/repo>'s local path and try again.
+     ```
+   - Label vocabulary is **not** a precondition; it is auto-created by setup phase (see below).
+
+9. **No worktree-path or branch collision.** Compute `WORKTREE_PATH` and `TACHIKOMA_BRANCH` (scaffold phase) and check up front:
+   - If `<WORKTREE_PATH>` already exists:
+     ```
+     ✗ Worktree path already exists: <WORKTREE_PATH>
+       → git worktree remove <WORKTREE_PATH>  (or --force if files linger)
+     ```
+   - If `<TACHIKOMA_BRANCH>` already exists:
+     ```
+     ✗ Branch already exists: <TACHIKOMA_BRANCH>
+       → Finish or abandon the existing run, or: git branch -D <TACHIKOMA_BRANCH>
+     ```
+   - For `--issue <N>` re-runs (both path and branch collide — expected guard):
+     ```
+     ✗ A Tachikoma run for issue #<N> already exists.
+       → /tachikoma resume  to continue it, or clean up first:
+         git worktree remove <WORKTREE_PATH> && git branch -D <TACHIKOMA_BRANCH>
+     ```
+
+10. **State detection across worktrees.** Enumerate via `git worktree list --porcelain`, then for each worktree check:
 
    **a. Loop still alive?** `<wt>/.tachikoma/run.pid` exists and `kill -0 <pid>` succeeds. Note the worktree as RUNNING.
 
@@ -73,131 +148,178 @@ Multiple tachikomas can run concurrently in the same repo (in separate worktrees
 
    **c. Stale lockfile?** `<wt>/.tachikoma/run.pid` exists with a dead PID — treat as crash, recoverable.
 
-   **d. Working tree dirty inside a worktree with state?** `git -C <wt> status --porcelain` non-empty + `.tachikoma/` present — that worktree's loop crashed mid-commit. Surface to user; resume blocked until they clean up that specific worktree.
+   **d. Working tree dirty inside a worktree with state?** `git -C <wt> status --porcelain` non-empty + `.tachikoma/` present — loop crashed mid-commit. Print:
+   ```
+   ✗ Worktree <wt> has uncommitted changes from a crashed loop — cannot resume safely.
+     → cd <wt> && git status  (then stash or commit, and retry /tachikoma resume)
+   ```
 
    Routing depends on what the user just typed:
-   - `/tachikoma` (no args) with **one** completed worktree → Phase 6 on it.
-   - `/tachikoma` (no args) with **one** interrupted/recoverable worktree → Phase R on it.
-   - `/tachikoma` (no args) with **multiple** terminal worktrees (any combination of complete/recoverable) → present picker; let user choose which to act on.
-   - `/tachikoma` (no args) with only RUNNING worktrees → tell user "N tachikomas running. `/tachikoma status` to see them, `/tachikoma stop` to halt one."
-   - `/tachikoma <new-args>` (start a new run) — terminal worktrees in the repo are NOT a blocker. Proceed to Phase 1; the user is starting an additional tachikoma alongside whatever's there.
-   - Pure stale clutter in some worktree (`.tachikoma/` with nothing meaningful) — ignore unless user is explicitly acting on that worktree.
+   - `/tachikoma` (no args) with **one** completed worktree → ship phase on it.
+   - `/tachikoma` (no args) with **one** interrupted/recoverable worktree → recover phase on it.
+   - `/tachikoma` (no args) with **multiple** terminal worktrees → present picker; let user choose which to act on.
+   - `/tachikoma` (no args) with only RUNNING worktrees → print:
+     ```
+     ✗ <N> Tachikoma(s) already running — no completed runs to act on.
+       → /tachikoma status   to see them
+       → /tachikoma stop     to halt one
+     ```
+   - `/tachikoma <new-args>` (start a new run) — terminal worktrees are NOT a blocker. Proceed to preflight.
+   - Pure stale clutter (`.tachikoma/` with nothing meaningful) — ignore unless user is explicitly acting on that worktree.
 
-## Phase 0: label vocabulary setup
+## Setup: label vocabulary
 
-Tachikoma uses four GitHub labels for its issue lifecycle: `ready-for-agent`, `agent-running`, `ready-for-review`, `needs-triage`. Before Phase 1 begins — for any invocation that will touch GitHub issues (`--remote`, `--issue <ref>`, `/tachikoma queue <repo>`) — verify the labels exist in the target repo and silently create any that are missing.
+Tachikoma uses four GitHub labels for its issue lifecycle: `ready-for-agent`, `agent-running`, `ready-for-review`, `needs-triage`. Before preflight begins — for any invocation that will touch GitHub issues (`--remote`, `--issue <ref>`, `/tachikoma queue <repo>`) — verify the labels exist in the target repo and silently create any that are missing.
 
 Target repo derivation:
 - `--issue <ref>`: from the ref (or cwd's `nameWithOwner` if no `org/repo` prefix).
 - `--remote`: cwd's `nameWithOwner` (`gh repo view --json nameWithOwner --jq .nameWithOwner`).
 - `/tachikoma queue <repo>`: the explicit `<repo>` argument.
 
-1. List existing labels in one call:
+1. Print: `Checking labels in <org/repo>…`
+2. List existing labels in one call:
    ```bash
    gh label list --repo <org/repo> --limit 100 --json name --jq '.[].name'
    ```
-2. Compute the missing set against the four required names.
-3. **If all four exist:** print nothing and continue to Phase 1.
-4. **If any are missing:** create each missing label silently with `gh label create <name> --repo <org/repo>` (default color/description are fine — these are internal lifecycle labels). Then emit exactly one log line, comma-separated in the order created, and continue to Phase 1:
+3. Compute the missing set against the four required names.
+4. **If all four exist:** print nothing and continue to preflight.
+5. **If any are missing:** create each missing label silently with `gh label create <name> --repo <org/repo>` (default color/description are fine — these are internal lifecycle labels). Then emit exactly one log line, comma-separated in the order created, and continue to preflight:
    ```
    Created missing labels: <name1>, <name2>, ...
    ```
 
 No confirmation prompt — this is infrastructure, not a decision the user needs to weigh in on. If a `gh label create` call fails (auth dropped, rate limit, etc.), surface the raw error and refuse — but never interrupt to ask the user about labels they didn't ask to be asked about.
 
-For bare `/tachikoma` (mode chosen via Phase 1 grill), the mode isn't known at preconditions time. If the user's grill answers route the run into existing-issue or remote-greenfield mode, run Phase 0 the moment that mode is selected — still before any GitHub-mutating step in Phase 2. For local mode, Phase 0 is a no-op; no labels are touched.
+For bare `/tachikoma` (mode chosen via preflight grill), the mode isn't known at preconditions time. If the user's grill answers route the run into existing-issue or remote-greenfield mode, run setup phase the moment that mode is selected — still before any GitHub-mutating step in plan phase. For local mode, setup phase is a no-op; no labels are touched.
 
-## Phase 1: planning grill
+## Configuration (`~/.claude/tachikoma.conf`)
 
-Run a Tachikoma-specific grill — do **not** invoke the generic `grill-me` skill. The fields below are required; ask only for those you cannot infer from the conversation context already.
+Tachikoma reads its defaults from `~/.claude/tachikoma.conf` before every run. Create this file once; all runs inherit from it silently. Keys are `key = value` pairs, one per line; `#` for comments. Missing file or missing key → built-in default applies.
 
-**Open the grill with this framing**, before asking any questions:
+| Key | Default | Values |
+|---|---|---|
+| `quality_bar` | `production` | `prototype`, `production`, `library` |
+| `iteration_cap` | `15` | Integer, max 50 |
+| `iteration_mode` | `afk` | `afk` or `once` |
+| `allowed_tools` | see below | Space-separated tokens for `claude -p --allowed-tools` |
 
-> I'll ask ~7 questions to scope this run (goal, quality bar, files in/out of scope, stop condition, mode, cap). Takes ~2 minutes. Type 'cancel' at any point to abort — nothing is created until you approve the plan.
+Default `allowed_tools` if the key is absent:
+```
+Edit Write Read Glob Grep Bash(git *) Bash(gh *) Bash(pnpm *) Bash(npm *) Bash(npx *) Bash(node *) Bash(make *) Bash(cargo *) Bash(go *) Bash(python *) Bash(python3 *) Bash(rg *) Bash(find *) Bash(cat *) Bash(echo *) Bash(ls *) Bash(mkdir *) Bash(cp *) Bash(mv *) Bash(rm *) Bash(touch *)
+```
 
-**Cancel path.** If at any point during the grill — including the final "Launch?" prompt — the user replies with `cancel`, `stop`, `exit`, or `nevermind` (or any clear abort intent), respond with exactly *"Cancelled. Nothing was created."* and exit cleanly. Do not write any files, do not create the worktree, do not invoke `to-prd`/`to-issues`. The cancel is honored up until Phase 3 begins; once the worktree exists, the user must use `/tachikoma stop` instead.
+Example `~/.claude/tachikoma.conf`:
+```
+quality_bar = production
+iteration_cap = 15
+iteration_mode = afk
+# allowed_tools = Edit Write Read Glob Grep Bash(git *) Bash(gh *) Bash(pnpm *)
+```
 
-In **`--issue <ref>` mode** (fast-path flag, or grill question 3 returned an issue ref): fetch the issue first (`gh issue view <num> --json title,body,labels,comments,assignees`). The issue body is the source of truth for **goal** and **stop condition** — extract them directly. Also scan the issue body (case-insensitive, whole-word) for the quality bar keywords `prototype`, `production`, and `library` — if exactly one matches, pre-fill it and skip question 2 (if multiple distinct keywords appear, the extraction is ambiguous; ask normally). Only grill the user for fields the issue body doesn't cover (typically: files in/out of scope, mode/cap, feedback loops, and quality bar when extraction failed). Confirm the extracted goal/stop-condition with the user before proceeding.
+## Preflight
 
-### Required fields
+All run parameters are resolved from three sources in priority order:
+1. The GitHub issue body (in `--issue` mode)
+2. `~/.claude/tachikoma.conf`
+3. Built-in defaults
 
-1. **Goal** — one-sentence end-state. "Tachikoma is done when …". *In `--issue` mode: extracted from issue body, confirmed with user.*
-2. **Quality bar** — one of:
-   - `prototype` ("speed over perfection, shortcuts OK")
-   - `production` ("must be maintainable, tests required, no shortcuts")
-   - `library` ("public API, backward compatibility matters, careful with breaking changes")
+**Cancel path.** Only honored if the user types `cancel`/`stop`/`exit`/`nevermind` before scaffold phase begins. Once the worktree exists, use `/tachikoma stop` instead.
 
-   *In `--issue` mode: skip this question entirely if the issue body contains exactly one of `prototype`, `production`, or `library` (case-insensitive, whole-word). Pre-fill the matched value and surface it in the grill output as `quality bar: <value> (extracted from issue body)`, so the user can override by editing the plan summary before approving. If two or three distinct keywords appear, the extraction is ambiguous — ask normally.*
-3. **Existing GitHub issue?** — Ask: *"Do you have an existing GitHub issue to work from? (paste the number, or say no)"*. Skip this question if invoked via the `--issue <ref>` or `--remote` fast-paths.
-   - If the user answers with an issue ref (`138`, `#138`, or `org/repo#138`): switch this run into existing-issue mode for the rest of the grill — equivalent to `/tachikoma --issue <ref>`. Apply the `--issue` preconditions now (precondition 7 + 8), fetch the issue, and use its body as the source of truth for goal and stop condition (reconcile with the goal answered in step 1; ask the user to confirm if they diverge). Skip step 4.
-   - If the user answers "no" / none / similar: continue to step 4.
-4. **Greenfield mode** — Only asked when step 3 was "no" (and not skipped by a fast-path flag). Ask: *"Keep tasks local (faster) or publish to GitHub Issues first? (local / remote)"*.
-   - `local` (default) — tasks live in `plans/prd.json`; no GitHub round-trip. Equivalent to bare `/tachikoma`.
-   - `remote` — equivalent to `/tachikoma --remote`. PRD goes through `to-prd` → `to-issues` and child issues are auto-promoted to `ready-for-agent`. Apply the `--remote` precondition now (precondition 7).
-5. **Files in scope** — explicit globs/paths Tachikoma may modify. Pocock's tip #3 — without this, Tachikoma redefines "done" to exclude inconvenient files.
-6. **Files out of scope** — explicit globs/paths Tachikoma must NOT touch. Use a list that does NOT overlap with files-in-scope (e.g., name specific dirs to exclude rather than `**` which matches everything).
-7. **Stop condition** — concrete acceptance criteria. "Done" must be testable, not "improve the codebase". *In `--issue` mode: extracted from issue acceptance criteria if present.*
-8. **Iteration mode** — Ask: *"How should I run this? **Once** (one iteration, runs now in the foreground — good for quick tasks) or **AFK** (capped loop, runs in the background — good for larger goals)?"* Use plain-language Once/AFK framing in the question itself. The raw flag form (`--once` or `--afk N`) is internal — record it in the grill output summary so the user can see what Phase 5 will execute, but never lead with it in the question. *In `--issue` mode: bias toward Once since the loop is scoped to a single issue.*
-9. **Iteration cap** (AFK only) — if user has no preference, suggest based on PRD size: 1–3 items → 5, 4–9 → 15, 10+ → 30. Hard ceiling 50; refuse higher. *In `--issue` mode: cap at 5 unless the user explicitly overrides — single issues rarely need more.*
+**Step 1 — First-run onboarding.** Check whether `~/.claude/tachikoma.conf` exists.
 
-### Auto-detected fields (confirm with user before locking in)
+- **If it exists:** read it, parse `key = value` pairs, apply built-in defaults for any missing keys. Continue to Step 2 — no questions asked.
 
-10. **Feedback-loop commands** — auto-detect from these sources, in order:
-   - `package.json` `scripts` keys: `typecheck`/`type-check`, `test`, `lint`
-   - `Makefile` targets of the same names
-   - `justfile` recipes of the same names
-   - `AGENTS.md` / `CLAUDE.md` if they document the canonical commands
-   - Cargo / Go / Python equivalents if applicable
+- **If it does not exist:** this is the user's first run. Run the onboarding flow before doing anything else:
 
-   Show the user the detected commands and ask: "These look right? Anything to add/remove?" If nothing detected, ask explicitly. At least one feedback loop must be defined; refuse to launch without any.
+  Print:
+  ```
+  Welcome to Tachikoma — autonomous AI coding loop.
+  ────────────────────────────────────────────────────
+  Let's set your defaults (takes ~1 minute). These are saved to
+  ~/.claude/tachikoma.conf and used silently on every future run.
+  You can edit the file any time to change them.
+  ```
 
-### Plan summary + launch confirmation
+  Ask three questions (one at a time, each with a recommended default shown inline):
 
-After the grill, present a single combined view that the user approves once. This is the only approval gate before Phase 2/3 — the legacy Phase 4 prompt-review step has been merged in here so the user reads (and edits) the plan and the prompt's key sections together, then launches with one confirmation.
+  **Q1 — Quality bar** (what standard should generated code meet by default?)
+  ```
+  Quality bar [production]:
+    prototype  — speed over correctness, shortcuts OK
+    production — tests required, no hacks, maintainable  (recommended)
+    library    — public API, backward-compat matters
+  ```
 
-**Section A — Field summary** (numbered list, all the fields collected above) plus:
-- **Iteration mode** (rendered as the raw flag form: `--once` or `--afk N`, so the user can see what Phase 5 will execute even though they answered in plain language)
-- **PR target branch** (`develop` if it exists, `dev` if it exists, else user-specified — the branch the issue branch will PR against)
-- **Issue branch** (e.g. `feat/issue-<N>-<slug>` — created off the PR target branch; squash-merge lands here in Phase 6)
-- **Tachikoma branch** (the computed `tachikoma/<slug>` name — branches off the issue branch)
-- **Worktree path** (the sibling dir that will be created via `git worktree add`)
+  **Q2 — Iteration mode** (how should the loop run by default?)
+  ```
+  Run mode [afk]:
+    afk   — background, capped loop, fires a notification when done  (recommended)
+    once  — foreground, single iteration, stays in your terminal
+  ```
 
-Any field auto-extracted from the issue body (e.g., quality bar in `--issue` mode) must be tagged `(extracted from issue body)` in the summary so the user knows it wasn't asked, and can override it.
+  **Q3 — Iteration cap** (AFK only — max iterations before stopping for review)
+  ```
+  Iteration cap [15]:  (1–50; Tachikoma stops and notifies you when hit)
+  ```
+  Skip Q3 if the user chose `once` in Q2.
 
-**Section B — Rendered prompt preview.** Show the key sections of what `prompt.md` will contain when Phase 3 renders it from [prompt.md.tmpl](prompt.md.tmpl), with placeholders substituted from the grill answers:
-- **Goal** (`{{GOAL}}`)
-- **Quality bar** — the full `{{QUALITY_BAR_PARAGRAPH}}` for the chosen tier (the loop reads this paragraph as guardrail text; the user should see the exact wording the agent will be primed with, not just the tier label).
-- **Files in scope** (`{{FILES_IN_SCOPE}}`)
-- **Files out of scope** (`{{FILES_OUT_OF_SCOPE}}`)
-- **Stop condition** (`{{STOP_CONDITION}}`)
-- **Feedback-loop commands** (`{{TYPECHECK_CMD}}`, `{{TEST_CMD}}`, `{{LINT_CMD}}`)
-- **Task source** (`{{TASK_SOURCE_BLOCK}}`) — for `--issue` mode the issue ref + acceptance criteria, for local the PRD shape, for remote-greenfield the parent PRD issue.
+  Write `~/.claude/tachikoma.conf` with the chosen values:
+  ```
+  quality_bar = <value>
+  iteration_mode = <value>
+  iteration_cap = <value>   # omit if once mode
+  ```
 
-Show enough that the user can spot wrong commands, fuzzy stop conditions, or scope mistakes without a separate review step. Don't dump the entire template — the agent reads the full file at iteration time. Boilerplate template scaffolding (`{{COMMIT_INSTRUCTIONS}}`, `{{COMPLETION_INSTRUCTIONS}}`) is omitted from the preview.
+  Print:
+  ```
+  ✓ Saved to ~/.claude/tachikoma.conf
+    Edit any time to change defaults. Now continuing…
+  ────────────────────────────────────────────────────
+  ```
 
-**Section B.5 — AFK permission preflight (AFK mode only).** Skip entirely for `--once` mode. For `--afk N`, the Phase 5 launch is `nohup .tachikoma/tachikoma.sh --afk N > .tachikoma/run.log 2>&1 & disown`, which Claude Code's auto-mode classifier blocks unless `Bash(nohup *)` is in the user's settings allowlist. Check up front so the user isn't surprised at launch time:
+  Continue to Step 2 using the just-written config values.
 
-1. Read `.claude/settings.json` and `.claude/settings.local.json` from the cwd worktree (project-level), then `~/.claude/settings.json` (user-level). Look in each file's `permissions.allow` array for any token that would cover the launch — exact matches `Bash(nohup *)` or `Bash(nohup .tachikoma/tachikoma.sh *)`, or a permissive parent like `Bash(*)`. Any one match is sufficient; absence of all three files is treated the same as no match.
-2. **If a matching permission is present:** silently continue to Section C.
-3. **If no matching permission is present:** warn the user before launch and offer to add it. Render exactly:
+**Step 2 — In `--issue` mode: fetch and parse the issue.**
 
-   > ⚠ AFK launch will likely be blocked — `Bash(nohup *)` is not in your `.claude/settings.json` allowlist. Without it, Claude Code's auto-mode classifier will refuse the `nohup ... & disown` invocation when Phase 5 fires it, and you'll have to retry or run it yourself.
-   >
-   > Add `Bash(nohup *)` to project `.claude/settings.json` via `/update-config` before launch? (yes / no / show)
+Print: `Fetching issue #<N>…`
+```bash
+gh issue view <N> --json title,body,labels,comments,assignees,number
+```
+Extract from the issue body:
+- **Goal**: issue title (or clearer one-liner from first paragraph of body)
+- **Stop condition**: `## Acceptance Criteria` / `## Done When` / `## AC` section if present; else derive from title
+- **Quality bar override**: scan for `prototype`, `production`, or `library` (case-insensitive, whole-word); if exactly one matches, override the config value; if ambiguous, config value wins
+- **Files in scope**: `files_in_scope:` frontmatter or `## Files in Scope` section; default `**` (whole repo)
+- **Files out of scope**: `files_out_of_scope:` frontmatter or `## Files out of Scope` section; default empty (no exclusions)
 
-4. **On `yes`:** invoke the `update-config` skill with the request `add "Bash(nohup *)" to permissions.allow in project-level .claude/settings.json`. Wait for it to complete, then re-read the file to verify the entry now appears. Continue to Section C.
-5. **On `no`:** continue to Section C unchanged. The Phase 5 blocked-launch fallback (see `--afk N` below) will still print the `!` recovery command if the launch is in fact blocked, so the user has a clear next step.
-6. **On `show`:** print the exact JSON delta `/update-config` would apply (the `Bash(nohup *)` token added to `permissions.allow`, with surrounding context for clarity), then re-ask the yes/no/show question.
+**Step 3 — Auto-detect feedback loops.** Check in order (no confirmation asked):
+- `package.json` `scripts` keys: `typecheck`/`type-check`, `test`, `lint`
+- `Makefile` targets of the same names
+- `justfile` recipes of the same names
+- `AGENTS.md` / `CLAUDE.md` documented commands
+- Cargo / Go / Python equivalents
 
-This preflight runs only in Phase 1 (initial planning). Phase R's Resume path does not re-run it — the Phase 5 blocked-launch fallback covers re-launches.
+If nothing detected, set feedback loops to `echo "no feedback loop — skipped"`. Never refuse to launch for missing feedback loops.
 
-**Section C — Launch confirmation.** Ask exactly one question, phrased per iteration mode:
-- AFK mode: *"Launch the AFK loop (cap N)?"*
-- Once mode: *"Launch foreground loop?"*
+**Step 4 — Determine PR target branch.** Check (in order, no prompt): `develop` exists → use it; `dev` exists → use it; else repo default branch (`gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`).
 
-If the user requests edits to any field (a scope glob, the stop condition, a feedback-loop command, etc.), edit the grill data in-conversation, re-show Sections A + B, and re-ask Section C. There is no second approval after this — once the user says yes, Phase 3 renders `prompt.md` to disk using the approved fields and Phase 5 launches immediately.
+**Step 5 — AFK permission check (silent).** For `afk` mode only: check `permissions.allow` in `.claude/settings.json` and `~/.claude/settings.json` for a token covering `nohup`. If absent, silently add `Bash(nohup *)` to project `.claude/settings.json` via the `update-config` skill. No user prompt.
 
-## Phase 2: PRD synthesis (mode-forked)
+**Step 6 — Print launch summary and immediately proceed to plan phase/3:**
+
+```
+── Tachikoma launching — <issue #N: title | goal>
+  Quality:    <quality_bar>           [config | issue body]
+  Mode:       --afk <cap>             [config]
+  Feedback:   <typecheck> | <test> | <lint>   [detected]
+  Scope:      <files_in_scope> (excluding: <out_of_scope or "none">)
+  PR target:  <PR_TARGET_BRANCH>
+  Worktree:   (creating...)
+```
+
+No user input required. plan phase/3 begin immediately.
+
+## Plan: PRD synthesis (mode-forked)
 
 ### Local mode (default)
 
@@ -232,13 +354,13 @@ Decompose the goal into vertical-slice items. Each item should be small enough t
 3. For each child issue, render an agent brief from [AGENT-BRIEF.tmpl](AGENT-BRIEF.tmpl) using grill data + the issue body, post it as a comment, and apply the `ready-for-agent` label.
 4. Remove the `needs-triage` label from each promoted issue.
 
-The `to-prd` and `to-issues` skills require their issue-tracker mapping config (which abstract states map to which concrete labels). Run `/setup-matt-pocock-skills` first if not configured. (Label *existence* in the target repo is handled separately by Phase 0 above.)
+The `to-prd` and `to-issues` skills require their issue-tracker mapping config (which abstract states map to which concrete labels). Run `/setup-matt-pocock-skills` first if not configured. (Label *existence* in the target repo is handled separately by setup phase above.)
 
 ### Existing-issue mode (`--issue <ref>`)
 
 The issue **is** the PRD. No `to-prd`/`to-issues` calls; no `plans/prd.json`.
 
-1. Fetch the full issue: `gh issue view <num> --json title,body,labels,comments,assignees,number`. You should already have done this in Phase 1.
+1. Fetch the full issue: `gh issue view <num> --json title,body,labels,comments,assignees,number`. You should already have done this in preflight.
 2. Render an agent brief from [AGENT-BRIEF.tmpl](AGENT-BRIEF.tmpl) using the grill answers + the issue body's existing content. Lean heavily on the issue body — don't restate what's already there. The brief is a *supplement*, not a replacement.
 3. Post the rendered brief as a new comment on the issue. Even if a prior brief comment exists, post a fresh one — old briefs may have stale assumptions; let the human reading the issue see the timestamp progression.
 4. Apply the `ready-for-agent` label to the issue. If `needs-triage`, `needs-info`, or any other state label is present, remove it.
@@ -252,11 +374,11 @@ If the issue is already labeled `ready-for-agent` and has a recent agent-brief c
 3. If no matching work_request exists: create `~/projects/personal-nix/wiki/work-requests/<slug>.md` using the work-request template. Fill from the issue body: goal = issue title, stop_condition = acceptance criteria if present, target_repo = `git -C <cwd> rev-parse --show-toplevel`. Set `github_issue: <org/repo>#<N>`, `status: open`.
 4. This applies to both `/tachikoma --issue N` (single-issue fast-path) and queue mode sourced from GitHub.
 
-## Phase 2.5: label claim (issue-linked runs)
+## Claim: label (issue-linked runs)
 
 For any run with a linked `github_issue` (from `--issue <N>`, `/tachikoma queue <repo>`, or a work_request with `github_issue` set):
 
-**Before creating the worktree** (after Phase 2, before Phase 3):
+**Before creating the worktree** (after plan phase, before scaffold phase):
 
 1. Apply `agent-running` label to the issue, remove `ready-for-agent`:
    ```bash
@@ -267,7 +389,7 @@ For any run with a linked `github_issue` (from `--issue <N>`, `/tachikoma queue 
 
 The `agent-running` label is the distributed claim signal. A concurrent Tachikoma filtering `ready-for-agent AND NOT agent-running` will not see this issue after step 1.
 
-## Phase 3: worktree creation + scaffolding
+## Scaffold: worktree creation
 
 1. **Compute slug.** Source depends on mode:
    - Local / Remote-greenfield: derive from grill goal.
@@ -289,8 +411,8 @@ The `agent-running` label is the distributed claim signal. A concurrent Tachikom
    - `TACHIKOMA_BRANCH` = `tachikoma/<slug>` (e.g. `tachikoma/issue-138-fix-vital-age`).
    - `WORKTREE_PATH` = `<dirname $MAIN_REPO>/<REPO_NAME>-tachikoma-<slug>` (e.g. `/Users/pioneer/Projects/platform-tachikoma-issue-138-fix-vital-age`).
    - `PR_TARGET_BRANCH` — determined by checking (in order): does `develop` exist (`git -C <MAIN_REPO> show-ref --verify --quiet refs/heads/develop`)? Does `dev` exist? If neither, ask the user: *"No `develop` or `dev` branch found. Which branch should the PR target?"* This is the branch the issue branch will PR against.
-   - `ISSUE_BRANCH` = `feat/<slug>` for local/remote mode; `feat/issue-<N>-<slug>` for `--issue` mode. This intermediate branch is created off `PR_TARGET_BRANCH` and is the squash-merge target in Phase 6.
-   - `BASE_BRANCH` = `ISSUE_BRANCH`. The branch the tachikoma branches off and the merge target for Phase 6. (Stored in `.tachikoma/base_branch`.)
+   - `ISSUE_BRANCH` = `feat/<slug>` for local/remote mode; `feat/issue-<N>-<slug>` for `--issue` mode. This intermediate branch is created off `PR_TARGET_BRANCH` and is the squash-merge target in ship phase.
+   - `BASE_BRANCH` = `ISSUE_BRANCH`. The branch the tachikoma branches off and the merge target for ship phase. (Stored in `.tachikoma/base_branch`.)
 
 3. **Collision check** (precondition 9 applied here in detail):
    - If `<WORKTREE_PATH>` exists: refuse with the exact path. Tell user to remove it (`git -C <MAIN_REPO> worktree remove <WORKTREE_PATH>`) or pick a different goal.
@@ -311,8 +433,17 @@ The `agent-running` label is the distributed claim signal. A concurrent Tachikom
    - Create `<WORKTREE_PATH>/.tachikoma/`.
    - Render `<WORKTREE_PATH>/.tachikoma/tachikoma.sh` from [tachikoma.sh.tmpl](tachikoma.sh.tmpl). **Set `{{REPO_PATH}} = WORKTREE_PATH`** (the script's `cd "$REPO"` keeps everything inside the worktree). `chmod +x`.
    - Render `<WORKTREE_PATH>/.tachikoma/prompt.md` from [prompt.md.tmpl](prompt.md.tmpl).
-   - Write `<WORKTREE_PATH>/.tachikoma/base_branch` — single line containing `<ISSUE_BRANCH>`. Phase 6 reads this to know the squash-merge target. (Conversation context isn't enough — AFK runs span sessions.)
-   - Write `<WORKTREE_PATH>/.tachikoma/pr_target_branch` — single line containing `<PR_TARGET_BRANCH>`. Phase 6 reads this to know what branch to open the PR against.
+   - Write `<WORKTREE_PATH>/.tachikoma/base_branch` — single line containing `<ISSUE_BRANCH>`. ship phase reads this to know the squash-merge target. (Conversation context isn't enough — AFK runs span sessions.)
+   - Write `<WORKTREE_PATH>/.tachikoma/pr_target_branch` — single line containing `<PR_TARGET_BRANCH>`. ship phase reads this to know what branch to open the PR against.
+   - Render `<WORKTREE_PATH>/.tachikoma/ship.md` from [ship.md.tmpl](ship.md.tmpl). Substitute all placeholders:
+     - `{{WORKTREE_PATH}}`, `{{TACHIKOMA_BRANCH}}`, `{{BASE_BRANCH}}`, `{{PR_TARGET_BRANCH}}`, `{{SLUG}}`
+     - `{{REPO_OWNER_NAME}}` — `gh repo view --json nameWithOwner --jq .nameWithOwner` (or empty for local mode)
+     - `{{GITHUB_ISSUE_LINE}}` — `Issue: <org/repo>#<N>` for `--issue` mode; empty otherwise
+     - `{{COMMIT_MESSAGE}}` — `<issue-title> (#<N>)\n\nCloses #<N>` for `--issue` mode; goal summary for local/remote
+     - `{{PR_TITLE}}` — issue title for `--issue` mode; goal summary otherwise
+     - `{{PR_BODY_ESCAPED}}` — the full PR body (see ship phase Step 6 for required content), with internal double-quotes escaped for shell safety
+     - `{{ISSUE_LABEL_BLOCK}}` — for issue-linked runs: the Step 6 label-update instructions (`gh issue edit ... --add-label ready-for-review --remove-label agent-running`); empty for local/remote
+     - `{{ISSUE_CLOSE_BLOCK}}` — for `--issue` mode: the Step 7 close-issue instructions; empty otherwise
    - In **local** mode only: write `<WORKTREE_PATH>/plans/prd.json`.
 
 6. **Commit the scaffolding inside the worktree** so the loop's first iteration has a clean tree. Use `git -C <WORKTREE_PATH>`:
@@ -321,17 +452,17 @@ The `agent-running` label is the distributed claim signal. A concurrent Tachikom
    - `--issue`: `git -C <WORKTREE_PATH> add .gitignore && git -C <WORKTREE_PATH> commit -m "chore: scaffold tachikoma loop for issue #<N>"`
    - `.tachikoma/` itself is gitignored — rendered scripts, logs, and `base_branch` do not get committed.
 
-7. **Print the worktree path prominently.** The orchestrator's cwd doesn't change, so the user needs the path to tail logs, open the worktree in an editor, or cd there manually. Format:
+7. **Confirm worktree ready.** This resolves the `Worktree: (creating...)` line from the preflight summary. Print:
    ```
-   Worktree:     <WORKTREE_PATH>
-   Branch:       <TACHIKOMA_BRANCH>  (off <ISSUE_BRANCH>)
-   Issue branch: <ISSUE_BRANCH>  (→ PR against <PR_TARGET_BRANCH>)
-   Tail:         tail -f <WORKTREE_PATH>/.tachikoma/run.log
+   ✓ Worktree ready
+     Path:         <WORKTREE_PATH>
+     Branch:       <TACHIKOMA_BRANCH>  (off <ISSUE_BRANCH>)
+     Issue branch: <ISSUE_BRANCH>  (→ PR against <PR_TARGET_BRANCH>)
    ```
 
-> Phase 4 (the standalone prompt review) was merged into Phase 1's combined plan-summary-and-launch confirmation. Phase 5's number is preserved so cross-references in this skill, in run logs, and in user muscle memory stay valid; there is no separate gate between Phase 3 and Phase 5.
+> Phase 4 (the standalone prompt review) was merged into preflight's combined plan-summary-and-launch confirmation. launch phase's number is preserved so cross-references in this skill, in run logs, and in user muscle memory stay valid; there is no separate gate between scaffold phase and launch phase.
 
-## Phase 5: launch
+## Launch
 
 The orchestrator's cwd doesn't matter — both modes `cd` into `<WORKTREE_PATH>` first.
 
@@ -342,13 +473,11 @@ cd <WORKTREE_PATH> && .tachikoma/tachikoma.sh --once
 ```
 Stream output. When the Bash tool returns, route on exit code:
 
-- **Exit 0** (clean completion): show the user `cat <WORKTREE_PATH>/.tachikoma/progress.txt`, then **immediately enter Phase 6** (the orchestrator is still in-session; don't print manual git instructions).
+- **Exit 0** (clean completion): show the user `cat <WORKTREE_PATH>/.tachikoma/progress.txt`, then **immediately enter ship phase** (the orchestrator is still in-session; don't print manual git instructions).
 - **Non-zero exit** (Ctrl+C, internal error, or any other abnormal termination): read `<WORKTREE_PATH>/.tachikoma/outcome` and route on its value:
-  - `stopped` — the user pressed Ctrl+C and the script's signal trap fired. Tell them: *"Loop was interrupted (Ctrl+C). What would you like to do?"* and immediately present the Phase R options (Resume / Review / Restart) with `WORKTREE_PATH` already selected (skip Phase R Step 0).
-  - `error` — the loop exited on an internal error. Tell them: *"Loop exited with an error at iter N. Check `<WORKTREE_PATH>/.tachikoma/run.log`."* Then offer the same Phase R options.
-  - missing or `unknown` — the script never wrote an outcome file (e.g. killed with SIGKILL before its trap could fire). Report the raw exit code and the path to `<WORKTREE_PATH>/.tachikoma/run.log`; do not auto-route to Phase 6 or Phase R. The user decides.
-
-This replaces the prior implicit "any exit goes to Phase 6" behavior — a Ctrl+C'd `--once` run is not complete and must not feed into the squash-merge prompts.
+  - `stopped` — user pressed Ctrl+C. Tell them the loop was interrupted, then enter ship phase on whatever was committed (treat as complete enough for a draft PR).
+  - `error` — internal error. **Auto-retry once**: clear the lockfile (`rm -f <WORKTREE_PATH>/.tachikoma/run.pid <WORKTREE_PATH>/.tachikoma/outcome`), re-run `cd <WORKTREE_PATH> && .tachikoma/tachikoma.sh --once`, and route on the new exit. If it errors again: push branch as a draft PR with the failure logged in the body, fire a macOS notification, and exit. Do NOT offer recover phase options.
+  - missing or `unknown` — script never wrote an outcome file (killed with SIGKILL). **Auto-retry once** using the same logic as `error` above.
 
 ### `--afk N`
 Launch backgrounded and detached so it survives this session ending:
@@ -372,160 +501,237 @@ cd <WORKTREE_PATH> && nohup .tachikoma/tachikoma.sh --afk N > .tachikoma/run.log
 
 Substitute the real `<WORKTREE_PATH>` and `N` into the `!` command — it must be paste-ready, not a placeholder. If the user picks option 1, after `update-config` finishes, retry the original Bash launch once before falling back to option 2 again. If the user picks option 2, wait for them to confirm they ran it, then read `<WORKTREE_PATH>/.tachikoma/run.pid` to capture the PID for the post-launch message below. Either way the user always sees the `!` command — never just a bare retry prompt.
 
-After launch, give the user a compact post-launch message with these pointers (in this order):
-- **Worktree**: `<WORKTREE_PATH>`
-- **PID**: `<pid>`, branch `<TACHIKOMA_BRANCH>` (off `<BASE_BRANCH>`), cap `N` iterations
-- **Tail**: `tail -f <WORKTREE_PATH>/.tachikoma/run.log`
-- **Check in**: `/tachikoma status` (or `/tachikoma t`) — read-only telemetry across all running tachikomas in this repo
-- **Stop**: `/tachikoma stop` (picker if >1 running) or `kill <pid>`
-- **When done**: macOS notification fires; then `/tachikoma` (no args) auto-routes to Phase 6. If multiple loops are done, picker chooses which to merge.
+After launch, give the user a compact post-launch message in this format:
+```
+── Launched  (afk, cap <N>)
+  Worktree:  <WORKTREE_PATH>
+  PID:       <pid>  ·  branch <TACHIKOMA_BRANCH>
+  Tail:      tail -f <WORKTREE_PATH>/.tachikoma/run.log
+  Check in:  /tachikoma status
+  Stop:      /tachikoma stop  ·  kill <pid>
+  Done:      auto-ships on completion  (or /tachikoma done if it fails)
+```
 
-Do NOT print manual `git log`/`git merge`/`git branch -D`/`git worktree remove` instructions — Phase 6 handles those.
+Do NOT print manual `git log`/`git merge`/`git branch -D`/`git worktree remove` instructions — ship phase handles those.
 
-## Phase 6: post-completion review
+## Ship: merge, PR, cleanup (fully autonomous)
 
-Triggered when:
-- `--once` mode finishes (orchestrator transitions immediately, with `WORKTREE_PATH` already known from this session).
-- User runs `/tachikoma done` (optionally `/tachikoma done <slug>`).
-- User runs `/tachikoma` with no args and exactly one worktree of this repo has `.tachikoma/outcome=complete`.
-- User runs `/tachikoma` with no args, **multiple** worktrees have terminal outcomes, and they pick a complete one from the picker.
+All steps run automatically — no prompts. Every decision is logged in the PR body. The only case that surfaces to the user is a merge conflict (can't be resolved without human judgment).
+
+Triggered automatically in two ways:
+- **`--once` mode**: orchestrator runs ship phase immediately after the loop exits (still in-session).
+- **`--afk N` mode**: `tachikoma.sh` runs `claude -p "$(cat .tachikoma/ship.md)"` after the sentinel is detected, before exiting. The `ship.md` prompt was rendered at scaffold time with all variables pre-substituted. If auto-ship fails, the work is still committed on the tachikoma branch and the user can run `/tachikoma done` to ship manually.
+
+Also triggerable manually:
+- User runs `/tachikoma done` (optionally `/tachikoma done <slug>`) — for failed auto-ship recovery or any case where manual control is needed.
 
 **Step 0 — Pick the tachikoma worktree, capture variables.**
 
-Enumerate via `git -C <cwd> worktree list --porcelain`. For each worktree, check `<wt>/.tachikoma/outcome`. Among those with `outcome=complete`:
+Enumerate via `git -C <cwd> worktree list --porcelain`. Among worktrees with `outcome=complete`:
 - If exactly one: that's `WORKTREE_PATH`.
-- If user passed `/tachikoma done <slug>`: match against the worktree's branch name; refuse if no match.
-- Otherwise: present picker via AskUserQuestion. (`--once` mode skips this — the orchestrator already knows.)
+- If user passed `/tachikoma done <slug>`: match against branch name; refuse if no match.
+- Otherwise: present picker via AskUserQuestion.
 
-Then capture:
+Capture:
 - `WORKTREE_PATH` — chosen above.
-- `TACHIKOMA_BRANCH` = `git -C <WORKTREE_PATH> rev-parse --abbrev-ref HEAD` (must start with `tachikoma/`; refuse if not).
-- `BASE_BRANCH` = contents of `<WORKTREE_PATH>/.tachikoma/base_branch` (single line). Fallback: ask user. Without this we can't safely merge.
+- `TACHIKOMA_BRANCH` = `git -C <WORKTREE_PATH> rev-parse --abbrev-ref HEAD` (must start with `tachikoma/`).
+- `BASE_BRANCH` = contents of `<WORKTREE_PATH>/.tachikoma/base_branch`. Fallback: ask user.
+- `PR_TARGET_BRANCH` = contents of `<WORKTREE_PATH>/.tachikoma/pr_target_branch`. Fallback: repo default branch.
 - `MAIN_REPO` = `dirname` of `git -C <WORKTREE_PATH> rev-parse --path-format=absolute --git-common-dir`.
+
+Print the ship phase header immediately after picking the worktree:
+```
+ship phase — <SLUG>
+────────────────────────────────────────────────────
+```
 
 **Step 1 — Locate the base-worktree.**
 
-Find the worktree where `<BASE_BRANCH>` is currently checked out (parse `git -C <MAIN_REPO> worktree list --porcelain` for `branch refs/heads/<BASE_BRANCH>`). Call it `BASE_WT`.
+Find the worktree where `<BASE_BRANCH>` is checked out. Call it `BASE_WT`. If not found anywhere, set `BASE_WT = MAIN_REPO` (will check out `<BASE_BRANCH>` there in Step 2).
 
-- If found: continue.
-- If not found (base branch isn't checked out anywhere): the main worktree is the place to do the merge. Set `BASE_WT = MAIN_REPO`. We'll check out `<BASE_BRANCH>` there in Step 2 — but only if `MAIN_REPO`'s working tree is clean.
+**Step 2 — Handle dirty base-worktree.**
 
-**Step 2 — Verify base-worktree is clean.**
+Print: `  Checking base worktree…`
 
-Run `git -C <BASE_WT> status --porcelain`. If non-empty: refuse with a clear message naming the path. The user must commit/stash/discard work in `<BASE_WT>` before we can merge there. Do NOT auto-stash — stash conflicts on pop are worse than the friction.
+Run `git -C <BASE_WT> status --porcelain`.
 
-**Step 3 — Show what changed.** Run:
+- **If clean:** print `  ✓ Base worktree clean`. Continue.
+- **If dirty:** auto-stash, merge, then pop. Print `  ⚠ Base worktree has uncommitted changes — stashing…` then:
+  ```bash
+  git -C <BASE_WT> stash push -u -m "tachikoma auto-stash before ship (<SLUG>)"
+  ```
+  Print `  ✓ Stashed  (will restore after merge)`. Set `STASHED=true` and continue to Step 3.
+
+After Step 4 (squash-merge), if `STASHED=true`:
+  Print `  Restoring stash…`
+  ```bash
+  git -C <BASE_WT> stash pop
+  ```
+  - On success: print `  ✓ Stash restored`
+  - On conflict: print:
+    ```
+      ⚠ Stash pop conflict — your stashed changes conflict with the merge.
+        Resolve manually:
+          cd <BASE_WT>
+          git status        # see conflicting files
+          git add <files> && git stash drop
+    ```
+    This doesn't block the PR or cleanup — the merge already landed. Proceed.
+
+**Step 3 — Log the diff:**
+
+Print: `  Diffing changes…`
+
 ```bash
 git -C <WORKTREE_PATH> log <TACHIKOMA_BRANCH> ^<BASE_BRANCH> --oneline
 git -C <WORKTREE_PATH> diff <BASE_BRANCH>...<TACHIKOMA_BRANCH> --stat
 ```
-Present output verbatim. Don't summarize.
+Print the diff output verbatim (indented 2 spaces), then print: `  ✓ <N> commits, <M> files changed`
 
-**Step 4 — Offer squash-merge.** Ask: *"Squash-merge `<TACHIKOMA_BRANCH>` into `<BASE_BRANCH>` (in worktree `<BASE_WT>`)?"*
-- On yes:
-  ```bash
-  # If BASE_BRANCH wasn't checked out in MAIN_REPO yet:
-  git -C <BASE_WT> checkout <BASE_BRANCH>
+**Step 4 — Squash-merge (automatic):**
 
-  # Merge:
-  git -C <BASE_WT> merge --squash <TACHIKOMA_BRANCH>
-  ```
-  Propose a commit message — for `--issue` mode use `<issue-title> (#<N>)\n\nCloses #<N>`; for local/remote use a summary derived from the goal. Show the proposed message and let user edit before:
-  ```bash
-  git -C <BASE_WT> commit -m "<approved message>"
-  ```
-  Capture the new commit SHA for Step 7.
-- On "let me review first" / no: exit Phase 6 quietly. The worktree, branch, and `.tachikoma/outcome=complete` all stay — `/tachikoma done` works again later.
+Print: `  Squash-merging into <BASE_BRANCH>…`
 
-**Step 5 — Combined worktree + branch cleanup.** Only after a successful merge. Single prompt:
+```bash
+git -C <BASE_WT> checkout <BASE_BRANCH>   # only if not already checked out there
+git -C <BASE_WT> merge --squash <TACHIKOMA_BRANCH>
+git -C <BASE_WT> commit -m "<auto-commit-message>"
+```
 
-> *"Delete worktree `<WORKTREE_PATH>` and branch `<TACHIKOMA_BRANCH>`?"*
+Auto-commit message:
+- `--issue` mode: `<issue-title> (#<N>)\n\nCloses #<N>`
+- local/remote: one-line summary derived from goal
 
-- On yes:
-  ```bash
-  git -C <MAIN_REPO> worktree remove <WORKTREE_PATH>
-  ```
-  If that fails because of untracked files (e.g. `.tachikoma/run.log`), retry with `--force`:
-  ```bash
-  git -C <MAIN_REPO> worktree remove --force <WORKTREE_PATH>
-  ```
-  Then delete the branch:
-  ```bash
-  git -C <MAIN_REPO> branch -D <TACHIKOMA_BRANCH>
-  ```
-  (`-D` is required — squash-merge isn't fast-forward, so `-d` would refuse.)
-- On no: leave both. User can clean up manually later via `git worktree remove ...` and `git branch -D ...`. They might want to copy something out of the worktree first.
+On success print: `  ✓ Squash-merged  (<commit-sha>)`
 
-**Step 6 — Offer PR.** Only if `git -C <BASE_WT> remote -v` shows a remote AND `gh auth status` succeeds: *"Push `<BASE_BRANCH>` and open a PR against `<PR_TARGET_BRANCH>`?"*
+If the merge exits with a conflict: run `git -C <BASE_WT> merge --abort`, push the tachikoma branch as a draft PR with conflict files listed in the body, and surface the error to the user — this is the one case that requires human attention. Print:
 
-Read `PR_TARGET_BRANCH` from `<WORKTREE_PATH>/.tachikoma/pr_target_branch` (fallback: ask user).
+```
+  ✗ Merge conflict — cannot auto-merge <TACHIKOMA_BRANCH> into <BASE_BRANCH>
 
-- On yes:
-  - Push if needed: `git -C <BASE_WT> push -u origin <BASE_BRANCH>`
-  - Open PR: `gh -R <owner/repo> pr create --title "<derived>" --body "<derived>" --base <PR_TARGET_BRANCH> --head <BASE_BRANCH>`. For `--issue` mode, body should reference `Closes #<N>`. Show the proposed title/body and let user edit before running.
-    Always append these HTML comment markers at the end of the body (invisible in rendered markdown; parsed by the `tachikoma-cleanup` GitHub Actions workflow in `personal-nix`):
-    ```
-    <!-- tachikoma-slug: <SLUG> -->
-    <!-- tachikoma-issue: <org/repo#N> -->
-    ```
-    Omit the `tachikoma-issue` line for local/remote mode runs (no linked issue).
-  - Print the PR URL. Capture for Step 7.
-  - Register pending cleanup: append an entry to `~/projects/personal-nix/wiki/pending-pr-cleanups.yml`:
-    ```yaml
-    - pr_url: <PR_URL>
-      slug: <SLUG>
-      issue: <org/repo#N>   # omit key entirely if not --issue mode
-      added: <YYYY-MM-DD>
-    ```
-    The `tachikoma-cleanup` workflow checks this file hourly and deletes the work-request + closes the issue when the PR merges. Commit + push this change to `personal-nix` (`git -C ~/projects/personal-nix commit -am "chore: register pending cleanup for <SLUG>" && git -C ~/projects/personal-nix push`).
-- On no: skip; user can do it manually later.
+  Conflicting files:
+    <file1>
+    <file2>
 
-For any run with a linked `github_issue` (applies regardless of whether a PR was opened):
+  Draft PR opened: <PR_URL>
+
+  To resolve:
+    1. cd <WORKTREE_PATH>           # tachikoma's branch is still here
+    2. git merge <BASE_BRANCH>      # re-trigger the conflict locally
+    3. Resolve conflicts, then: git add . && git commit
+    4. git push
+    5. Convert the draft PR to ready for review on GitHub
+    6. Delete the worktree when done: git worktree remove <WORKTREE_PATH> && git branch -D <TACHIKOMA_BRANCH>
+```
+
+Capture the commit SHA.
+
+**Step 5 — Worktree + branch cleanup (automatic):**
+
+Print: `  Cleaning up worktree…`
+
+```bash
+git -C <MAIN_REPO> worktree remove <WORKTREE_PATH>
+# if that fails due to untracked files:
+git -C <MAIN_REPO> worktree remove --force <WORKTREE_PATH>
+git -C <MAIN_REPO> branch -D <TACHIKOMA_BRANCH>
+```
+
+On success print: `  ✓ Worktree + branch removed`
+
+**Step 6 — Push + open PR (automatic):**
+
+If `git -C <BASE_WT> remote -v` shows no remote or `gh auth status` fails: print `  ⚠ No remote — skipping PR` and continue to Step 7.
+
+Otherwise:
+
+Print: `  Pushing <BASE_BRANCH>…`
+
+```bash
+git -C <BASE_WT> push -u origin <BASE_BRANCH>
+```
+
+On success print: `  ✓ Pushed`
+
+Print: `  Opening PR…`
+
+```bash
+gh -R <owner/repo> pr create --title "<derived>" --body "<pr-body>" --base <PR_TARGET_BRANCH> --head <BASE_BRANCH>
+```
+
+PR title: `<issue-title>` for `--issue` mode; goal summary for local/remote.
+
+PR body must include:
+```markdown
+<summary of what was done — derived from progress.txt and commit log>
+
+## Tachikoma run
+
+- **Issue**: #<N> (if --issue mode)
+- **Quality bar**: <quality_bar> [source: config | issue body]
+- **Mode**: --afk <cap> [source: config]
+- **Feedback loops**: <detected commands>
+- **Files in scope**: <scope>
+- **Iterations**: <N> completed
+- **Branch**: `<TACHIKOMA_BRANCH>` → `<BASE_BRANCH>` → PR against `<PR_TARGET_BRANCH>`
+
+Closes #<N>
+
+<!-- tachikoma-slug: <SLUG> -->
+<!-- tachikoma-issue: <org/repo#N> -->
+```
+
+Omit `Closes #<N>` and `tachikoma-issue` line for local/remote mode.
+
+On success print: `  ✓ PR opened  <PR_URL>`
+
+Register in `~/projects/personal-nix/wiki/pending-pr-cleanups.yml`:
+```yaml
+- pr_url: <PR_URL>
+  slug: <SLUG>
+  issue: <org/repo#N>   # omit if not --issue mode
+  added: <YYYY-MM-DD>
+```
+Commit + push this to `personal-nix` (`git -C ~/projects/personal-nix commit -am "chore: register pending cleanup for <SLUG>" && git -C ~/projects/personal-nix push`).
+
+For any issue-linked run (regardless of whether a PR was opened), print `  Updating issue labels…` then:
 ```bash
 gh issue edit <N> --repo <org/repo> --add-label "ready-for-review" --remove-label "agent-running"
 ```
 
-**Step 7 — Offer to close the issue** *(`--issue` mode only)*. Ask: *"Close issue #<N> now?"*
+On success print: `  ✓ Labels updated  (ready-for-review)`
 
-Note: this is human-approved closure, not autonomous. The "agents don't close issues" convention applies to the AFK loop in Phase 5, NOT to Phase 6.
+**Step 7 — Close issue (automatic, `--issue` mode only):**
 
-Smart default:
-- If a PR was opened in Step 6 AND `<BASE_BRANCH>` is the repo's default branch: recommend **"no"** — GitHub auto-closes on merge via `Closes #<N>`.
-- If a PR was opened but `<BASE_BRANCH>` is NOT the default: recommend **"yes"**.
-- If no PR was opened: recommend **"yes"**.
-
-On yes:
-```bash
-gh issue close <N> --comment "Resolved via Tachikoma: squash-merged <TACHIKOMA_BRANCH> into <BASE_BRANCH> as <commit-sha>.<pr-line-if-any>"
-```
-Where `<pr-line-if-any>` is `\nPR: <url>` if a PR was opened, else empty.
-
-**Step 8 — Final cleanup.**
-- If Step 5 user said yes: worktree (and `.tachikoma/`) are gone. Nothing more to do for git state.
-- If Step 5 user said no: remove `<WORKTREE_PATH>/.tachikoma/outcome` so a future `/tachikoma` invocation doesn't keep routing to Phase 6 for this finished run:
+- If a PR was opened AND `<PR_TARGET_BRANCH>` is the repo's default branch: print `  ✓ Issue will auto-close on PR merge  (Closes #<N>)` — skip explicit close.
+- Otherwise: print `  Closing issue #<N>…` then:
   ```bash
-  rm -f <WORKTREE_PATH>/.tachikoma/outcome
+  gh issue close <N> --comment "Resolved via Tachikoma: squash-merged <TACHIKOMA_BRANCH> into <BASE_BRANCH> as <commit-sha>.<pr-line>"
   ```
-  Leave the rest of `.tachikoma/` (prompt, run.log, progress.txt) and the worktree itself for the user.
+  Where `<pr-line>` is `\nPR: <url>` if a PR was opened, else empty.
+  On success print: `  ✓ Issue #<N> closed`
+
+**Step 8 — Final cleanup:**
+
+Worktree was removed in Step 5. Nothing more to do for git state.
 
 **Step 9 — Work-queue cleanup.**
 
-Only runs after a successful squash-merge (Step 4 user said yes).
+Derive `SLUG` by stripping `tachikoma/` from `TACHIKOMA_BRANCH`. Check `~/projects/personal-nix/wiki/work-requests/<SLUG>.md`:
+- If it doesn't exist: skip silently.
+- If PR was opened: skip deletion — `tachikoma-cleanup` GitHub Actions workflow deletes it when the PR merges. Print `  ✓ Work-request will auto-delete on PR merge`
+- If no PR was opened: invoke `/work-queue done <SLUG>` immediately. Print `  ✓ Work-request deleted`
 
-Derive the work-request slug by stripping the `tachikoma/` prefix from `TACHIKOMA_BRANCH`:
+After Step 9, print the completion footer:
 ```
-SLUG = TACHIKOMA_BRANCH.removePrefix("tachikoma/")
+────────────────────────────────────────────────────
+✓ Done — <SLUG>
+  PR:  <PR_URL>          (or "no PR — no remote")
+  SHA: <commit-sha>
+────────────────────────────────────────────────────
 ```
 
-Check if `~/projects/personal-nix/wiki/work-requests/<SLUG>.md` exists. If it doesn't, skip silently — not every tachikoma run originates from the work queue.
-
-If it does:
-- **PR was opened in Step 6**: skip deletion. The `tachikoma-cleanup` GitHub Actions workflow in `personal-nix` will delete it when the PR merges on GitHub.
-- **No PR was opened**: invoke `/work-queue done <SLUG>` to delete it immediately.
-
-**If user bails mid-Phase-6** (says no at Step 4): exit cleanly. State is recoverable — `<WORKTREE_PATH>/.tachikoma/outcome=complete` stays, so `/tachikoma done` works again later. Phase 6 is idempotent; re-entering picks up where they left off. Steps that already happened (already-merged, already-pushed) are detected by re-running the same probe (e.g. `git log <BASE_BRANCH>..<TACHIKOMA_BRANCH>` empty → already merged → skip to Step 5).
-
-## Phase R: recovery from interruption
+## Recover: interrupted run
 
 Triggered when:
 - Precondition 10 detects an interruptable worktree: `.tachikoma/outcome ∈ {cap, error, stopped}` OR a stale lockfile (PID dead).
@@ -548,30 +754,32 @@ Capture: `WORKTREE_PATH`, `TACHIKOMA_BRANCH`, `BASE_BRANCH` (read `<WORKTREE_PAT
 
 **Step 2 — Verify safe to resume.** `git -C <WORKTREE_PATH> status --porcelain`. If non-empty: surface and stop. The user must clean up that specific worktree (`cd <WORKTREE_PATH>; git status; git stash` etc.) before resuming.
 
-**Step 3 — Offer three paths.** Ask:
+**Step 3 — Auto-route by outcome:**
 
-| Path | What it does |
-|---|---|
-| **Resume** | Re-launch `<WORKTREE_PATH>/.tachikoma/tachikoma.sh` with chosen mode/cap. Agent reads progress.txt + PRD/issue, picks the next unfinished task, continues. |
-| **Review** (Phase 6) | Treat what's committed as "done enough." Jump to Phase 6 with this worktree pre-selected. |
-| **Restart** | Discard partial work in this worktree. Asks whether to also remove the worktree directory and the `tachikoma/<slug>` branch. |
-
-For the **Resume** path:
-- Default cap suggestion: `--afk 5` if previous mode was `--afk`; `--once` if previous was `--once`. Let user override.
-- Before re-launching: `rm -f <WORKTREE_PATH>/.tachikoma/run.pid <WORKTREE_PATH>/.tachikoma/outcome` so the bash loop's startup checks pass.
-- Re-launch via Phase 5 mechanism: `cd <WORKTREE_PATH> && nohup .tachikoma/tachikoma.sh --afk N > .tachikoma/run.log 2>&1 & disown` (or `--once` foreground).
-
-For the **Review** path: jump to Phase 6 with `WORKTREE_PATH` already selected (skip Step 0).
-
-For the **Restart** path:
-- Confirm: "Delete worktree `<WORKTREE_PATH>` and branch `<TACHIKOMA_BRANCH>`? Their commits will be unrecoverable except via reflog. OK?"
-- On yes:
-  ```bash
-  git -C <MAIN_REPO> worktree remove --force <WORKTREE_PATH>
-  git -C <MAIN_REPO> branch -D <TACHIKOMA_BRANCH>
+- **`error` or stale lockfile (crashed)**: auto-retry once. Clear `run.pid` and `outcome`, re-launch with `--afk <original-cap>` (or `--once` if that was the original mode). If the retry also ends in `error`: push the branch as a draft PR with the failure log in the body, fire a macOS notification, and exit. No user prompt.
+- **`cap` (hit iteration limit)**: auto-retry once at `floor(cap / 2)`. If it caps again: push the branch as a draft PR, fire a macOS notification, and print:
   ```
-  Then fall through to a fresh planning grill (Phase 1).
-- On no: exit cleanly. The user changed their mind about restarting; the worktree, branch, and `.tachikoma/` state are all left as-is so they can re-enter Phase R later.
+  ⏱ Cap hit twice — opening draft PR with partial work.
+
+  What happened:
+    Tachikoma ran <original-cap> iterations, then retried at <half-cap>,
+    and still didn't reach the goal. The work so far is real but incomplete.
+
+  Draft PR opened: <PR_URL>
+    The PR contains everything committed up to this point.
+    It's a draft — nothing will merge until you promote it.
+
+  What to do next:
+    • Review the PR to see how far it got.
+    • If the goal is too large: break it into smaller issues and run
+      /tachikoma on each one individually.
+    • If it just needs more iterations: reopen the issue, raise
+      iteration_cap in ~/.claude/tachikoma.conf, and re-run.
+    • To discard: close the draft PR and delete the branch.
+  ```
+- **`stopped` (deliberate Ctrl+C)**: jump directly to ship phase with `WORKTREE_PATH` pre-selected. Treat whatever was committed as complete enough.
+
+Only surface to the user if the user explicitly runs `/tachikoma resume` — in that case offer the three manual paths (Resume / ship phase / Restart) as before, since the user is actively choosing to intervene.
 
 ## Subcommand: `/tachikoma status` (alias `/tachikoma t`)
 
@@ -601,8 +809,8 @@ Today's full detail format. For the matched worktree, gather:
 
 Output:
 ```
-Tachikoma telemetry — <tachikoma-branch>
-─────────────────────────────────────────────────────
+Tachikoma — <tachikoma-branch>
+────────────────────────────────────────────────────
   Status:    <RUNNING / COMPLETE / CAP / ERROR / STOPPED>
   PID:       <pid> (alive | dead)
   Iter:      <N> / <M>
@@ -618,30 +826,28 @@ Last progress note:
 Recent log (last 15 lines):
   <tail of run.log>
 
-────
-Stop: /tachikoma stop  ·  Resume / review on next interaction: /tachikoma
+────────────────────────────────────────────────────
+/tachikoma stop  ·  /tachikoma resume  ·  /tachikoma done
 ```
 
 Light suggestions based on state:
 - **RUNNING**: "Loop is healthy. Check back when notification fires."
-- **COMPLETE**: "Loop done. `/tachikoma done` to enter Phase 6."
-- **CAP / ERROR / STOPPED**: "Loop ended in `<outcome>`. `/tachikoma resume` to see Phase R options."
+- **COMPLETE**: "Loop done. `/tachikoma done` to enter ship phase."
+- **CAP / ERROR / STOPPED**: "Loop ended in `<outcome>`. `/tachikoma resume` to see recover phase options."
 
 Keep under ~40 lines.
 
 ### Multiple tachikomas (compact summary)
 
 ```
-Tachikoma status — <repo-name> repo (<N> loops)
-─────────────────────────────────────────────────────
+Tachikoma — <repo-name>  (<N> loops)
+────────────────────────────────────────────────────
   RUNNING   <tachikoma-branch-1>   iter <N>/<M>   pid <pid>
   RUNNING   <tachikoma-branch-2>   iter <N>/<M>   pid <pid>
   COMPLETE  <tachikoma-branch-3>   awaiting /tachikoma done
   CAP       <tachikoma-branch-4>   ended at iter <N>/<M>
-
-Drill in: /tachikoma status <slug>
-Stop:     /tachikoma stop  (picker)  ·  /tachikoma stop --all
-Done:     /tachikoma done  (picker on completed)
+────────────────────────────────────────────────────
+/tachikoma status <slug>  ·  /tachikoma stop  ·  /tachikoma done
 ```
 
 Keep one row per loop, ≤80 chars wide. Don't print log tails or progress notes — that's drill-in territory.
@@ -662,7 +868,7 @@ Keep one row per loop, ≤80 chars wide. Don't print log tails or progress notes
 
 **Step 3 — Stop a single loop:**
 1. `kill -TERM <PID>`. The script's trap catches SIGTERM, finishes the current iteration cleanly, removes the lockfile, fires notification with `outcome=stopped`, exits.
-2. Wait up to 60s for graceful exit; if still alive, `kill -KILL <PID>` and warn user about possibly-dirty worktree (which they'd see in Phase R).
+2. Wait up to 60s for graceful exit; if still alive, `kill -KILL <PID>` and warn user about possibly-dirty worktree (which they'd see in recover phase).
 
 For `--all`: send SIGTERM to all in parallel; wait up to 60s for all; SIGKILL stragglers.
 
@@ -749,9 +955,8 @@ For each item in queue order:
 
 **a. Print item header:**
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[1/3] fix-vital-age → ~/projects/platform
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+────────────────────────────────────────────────────
+[1/3] fix-vital-age  →  ~/projects/platform
 ```
 
 **b. Extract grill fields from the work-request body.** Look for these sections in order of precedence (explicit header > first paragraph):
@@ -772,9 +977,9 @@ For well-structured bodies, show the extracted fields and confirm in one pass.
 
 **d. Update the queue file:** `status: open` → `status: grabbed`, bump `last_updated` to today. This is the commit point — anything after this that exits unexpectedly leaves the item grabbed and triggers Step 0 recovery on the next run.
 
-**e. `cd` to `target_repo`.** Run Phase 3 (worktree creation + scaffolding) using the extracted fields. The target_repo's current HEAD is the base branch. Queue mode's per-item "Launch this item?" at step (c) is the single approval gate — Phase 4 was merged into Phase 1 for the bare `/tachikoma` flow, and queue mode's step (c) plays the same role here, so there's no second prompt-review step before launch.
+**e. `cd` to `target_repo`.** Run scaffold phase (worktree creation + scaffolding) using the extracted fields. The target_repo's current HEAD is the base branch. Queue mode's per-item "Launch this item?" at step (c) is the single approval gate — Phase 4 was merged into preflight for the bare `/tachikoma` flow, and queue mode's step (c) plays the same role here, so there's no second prompt-review step before launch.
 
-**f. Phase 5 — launch `--once` (foreground).** Stream the iteration output directly. Queue drain is the session driver; `--once` keeps items sequential and output readable.
+**f. launch phase — launch `--once` (foreground).** Stream the iteration output directly. Queue drain is the session driver; `--once` keeps items sequential and output readable.
 
 If `caffeinated=true`, wrap the launch to prevent macOS sleep:
 ```bash
@@ -787,16 +992,16 @@ cd <WORKTREE_PATH> && .tachikoma/tachikoma.sh --once
 
 **g. Transition banner after tachikoma output ends:**
 ```
-━━━ Queue Drain — Phase 6: fix-vital-age ━━━━━━━━━━━━━━
+── ship phase: fix-vital-age
 ```
-This separates tachikoma's raw output from queue drain's Phase 6 actions in the scrollback.
+This separates tachikoma's raw output from queue drain's ship phase actions in the scrollback.
 
-**h. Phase 6 (abbreviated, uses batch preferences):**
+**h. ship phase (abbreviated, uses batch preferences):**
 - Show diff stat verbatim.
 - Squash-merge: auto-approve unless conflicts arise (see failure handling below for conflict path).
 - Worktree + branch cleanup: if `auto-clean=yes`, skip the interactive prompt and clean up automatically.
 - PR: if `auto-open=yes`, derive title/body from goal + slug and open without review (user can edit on GitHub). Print the PR URL.
-- Issue close: skip for local-mode items. For `--issue`-sourced items, apply Phase 6 Step 7 smart default.
+- Issue close: skip for local-mode items. For `--issue`-sourced items, apply ship phase Step 7 smart default.
 
 **i. Mark item `status: done`**, bump `last_updated`, bump nothing on `failure_count` (success resets nothing — count is cumulative across all time).
 
@@ -817,8 +1022,13 @@ The goal is to skip and continue — never block the queue waiting for human inp
 ```
 
 Re-launch `--once` with `floor(original_cap / 2)`. If it caps again:
-- Treat as a failure (same path as `error` below).
-- Do NOT auto-resume a third time.
+- Treat as a failure (same path as `error` below). Do NOT auto-resume a third time.
+- Before logging the failure, print:
+  ```
+  ⏱ [N/M] <slug> — cap hit twice (<original-cap> then <half-cap> iterations).
+     The goal is likely too large for one run. Draft PR opened with partial work.
+     See the failure log in the work-request file for what to try next.
+  ```
 
 #### Outcome: `error`, `stopped`, or `blocker-exit`
 
@@ -832,6 +1042,21 @@ Skip immediately. No retry. Proceed to the failure-log path below, then move to 
    - Push the branch: `git -C <WORKTREE_PATH> push -u origin <TACHIKOMA_BRANCH>`
    - Open a draft PR: `gh pr create --draft --title "[partial] <goal-slug>" --body "Partial work from queue drain. See work-request failure log for context."`
    - Record the draft PR URL for the failure log.
+   - **For `error` outcome (loop crashed twice), print this explanatory block** so the user sees a clear next-step picture when the notification fires:
+     ```
+     ⚠ [N/M] <slug> — loop crashed twice (outcome: error)
+
+       The loop exited with an internal error and could not auto-recover. Partial work
+       has been pushed as a draft PR so nothing is lost.
+
+       Draft PR: <PR_URL>  (stays as draft — won't merge until you promote it to ready)
+
+       What to do next:
+         • Review the draft PR to see what was attempted
+         • Check the run log: <WORKTREE_PATH>/.tachikoma/run.log
+         • Fix the underlying error in the work-request and re-queue, OR
+         • Discard the draft PR and close out the work-request
+     ```
    - Clean up the worktree: `git -C <MAIN_REPO> worktree remove --force <WORKTREE_PATH>` (branch stays — it's the draft PR's head).
    - If no commits beyond scaffold: clean up worktree + branch entirely.
 
@@ -873,7 +1098,7 @@ Skip immediately. No retry. Proceed to the failure-log path below, then move to 
    ✗ [1/3] fix-vital-age — FAILED (error · draft PR opened · needs-triage after 2 failures)
    ```
 
-#### Phase 6 merge conflict
+#### ship phase merge conflict
 
 If squash-merge exits with a conflict:
 - Abort the merge: `git -C <BASE_WT> merge --abort`
@@ -902,9 +1127,9 @@ If the abort happens **after** the worktree is created but before tachikoma laun
 After all items are processed, print the summary and write it to `~/projects/personal-nix/wiki/work-requests/.last-queue-run.md` (same content, for morning review if the terminal is gone).
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+────────────────────────────────────────────────────
 Queue drain complete — 2026-05-10
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+────────────────────────────────────────────────────
 ✓  fix-vital-age            PR #142  ~/projects/platform
 ✓  add-sleep-chart           PR #143  ~/projects/healthbite
 ✗  refactor-auth-middleware  FAILED (error · draft PR #144 · 1/2 failures)
@@ -912,7 +1137,7 @@ Queue drain complete — 2026-05-10
 
 PRs opened:  #142, #143, #144 (draft)
 Needs attention: 1 failed item · 1 needs-triage item
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+────────────────────────────────────────────────────
 ```
 
 Write `.last-queue-run.md` using the identical content so it's readable both in terminal and in a text editor.
@@ -924,7 +1149,7 @@ When `/tachikoma queue <repo>` is invoked (e.g. `/tachikoma queue MioMarker/heal
 **Step 0 — Fetch GitHub queue:**
 1. `gh issue list --repo <repo> --label "ready-for-agent" --state open --json number,title,body,labels,comments --limit 100`
 2. Filter out any issues that also have `agent-running` label (already claimed).
-3. For each remaining issue, check `~/projects/personal-nix/wiki/work-requests/` for an existing work_request with `github_issue: <repo>#<N>`. If none exists, auto-create one (see Phase 2 work_request auto-creation rules above).
+3. For each remaining issue, check `~/projects/personal-nix/wiki/work-requests/` for an existing work_request with `github_issue: <repo>#<N>`. If none exists, auto-create one (see plan phase work_request auto-creation rules above).
 4. Build the run list from these work_requests. Proceed into the normal queue-drain Step 1 (pre-flight) with this list.
 
 **HITL notification** (after Step 3 session summary):
@@ -968,59 +1193,20 @@ If zero issues remain (everything closed or resolved): print `✓ Queue clear �
 
 - [tachikoma.sh.tmpl](tachikoma.sh.tmpl) — the bash loop. Placeholders: `{{ALLOWED_TOOLS}}`, `{{SENTINEL}}`, `{{REPO_PATH}}`.
 - [prompt.md.tmpl](prompt.md.tmpl) — the per-iteration prompt. Placeholders: `{{GOAL}}`, `{{QUALITY_BAR_PARAGRAPH}}`, `{{FILES_IN_SCOPE}}`, `{{FILES_OUT_OF_SCOPE}}`, `{{STOP_CONDITION}}`, `{{TASK_SOURCE_BLOCK}}`, `{{TYPECHECK_CMD}}`, `{{TEST_CMD}}`, `{{LINT_CMD}}`, `{{COMMIT_INSTRUCTIONS}}`, `{{COMPLETION_INSTRUCTIONS}}`.
+- [ship.md.tmpl](ship.md.tmpl) — the auto-ship prompt, run by `tachikoma.sh` via `claude -p` after the sentinel is detected. Placeholders: `{{WORKTREE_PATH}}`, `{{TACHIKOMA_BRANCH}}`, `{{BASE_BRANCH}}`, `{{PR_TARGET_BRANCH}}`, `{{SLUG}}`, `{{REPO_OWNER_NAME}}`, `{{GITHUB_ISSUE_LINE}}`, `{{COMMIT_MESSAGE}}`, `{{PR_TITLE}}`, `{{PR_BODY_ESCAPED}}`, `{{ISSUE_LABEL_BLOCK}}`, `{{ISSUE_CLOSE_BLOCK}}`.
 - [AGENT-BRIEF.tmpl](AGENT-BRIEF.tmpl) — remote-mode agent brief comment, posted as a GitHub issue comment after `to-issues` promotes child issues. Placeholders: `{{CATEGORY}}`, `{{SUMMARY}}`, `{{CURRENT_BEHAVIOR}}`, `{{DESIRED_BEHAVIOR}}`, `{{KEY_INTERFACES}}`, `{{ACCEPTANCE_CRITERIA}}`, `{{OUT_OF_SCOPE}}`, `{{QUALITY_BAR}}`. Fill from grill answers + issue body content. Used in both `--remote` and `--issue` modes.
 
 ## Rendering `{{ALLOWED_TOOLS}}` (required, exact format)
 
-This is the string Bash passes to `claude -p --allowed-tools`. Render it as **space-separated** tokens, **constrained per `Bash(...)` glob**. Do NOT pass an unqualified `Bash` — that grants the loop iteration carte blanche to run anything (including `rm -rf`), which defeats the v1 sandboxing decision.
+This is the string Bash passes to `claude -p --allowed-tools`. Read the `allowed_tools` key from `~/.claude/tachikoma.conf` and use it verbatim. If the key is absent, use the built-in default (see Configuration section above).
 
-### Always-included tokens
-```
-Edit Write Read Glob Grep
-```
-
-### Bash glob tokens (compose from the grill answers)
-- Always: `Bash(git *)`
-- For each non-empty feedback-loop command, take the **first word** and add a glob. Examples:
-  - typecheck `pnpm type-check` → `Bash(pnpm *)`
-  - tests `npm test` → `Bash(npm *)`
-  - lint `cargo clippy` → `Bash(cargo *)`
-  - inline shell like `echo 'no typecheck'` or `grep -q hello hello.txt` → `Bash(echo *)` and `Bash(grep *)`
-  - the typecheck/test/lint commands collapse — dedupe so the same first-word glob isn't repeated.
-- For `--remote` mode only: also `Bash(gh *)`
-
-### Worked example
-
-Grill produced:
-- typecheck: `pnpm type-check`
-- tests: `pnpm test`
-- lint: `pnpm lint`
-- mode: local
-
-Render:
-```
-Edit Write Read Glob Grep Bash(git *) Bash(pnpm *)
-```
-
-### Worked example (smoke test)
-
-Grill produced:
-- typecheck: `echo "no typecheck — skipped"`
-- tests: `grep -q hello hello.txt && echo "PASS"`
-- lint: `echo "no lint — skipped"`
-
-Render:
-```
-Edit Write Read Glob Grep Bash(git *) Bash(echo *) Bash(grep *)
-```
+Tokens must be **space-separated**. Do NOT pass an unqualified `Bash` — that grants carte blanche. The config default is intentionally broad but still glob-constrained.
 
 ### Anti-pattern (never render)
 ```
 Bash,Read,Edit,Write     # commas not spaces; unqualified Bash
 Bash                     # unqualified — grants everything
 ```
-
-If the grill's feedback-loop commands include shell pipelines or operators (`&&`, `|`, `;`), the **first word still applies** — `claude -p` evaluates the whole command string against the allowlist via the leading binary.
 
 ## Quality bar paragraphs (drop into `{{QUALITY_BAR_PARAGRAPH}}`)
 
@@ -1128,11 +1314,11 @@ The bash script handles this — calls `osascript -e 'display notification ...'`
 
 ## Cleanup philosophy
 
-The **worktree** is the per-run sandbox. `.tachikoma/` lives inside it (gitignored). The `tachikoma/<slug>` branch is the durable record. Phase 6 squash-merges into base and (with user approval) removes the worktree + branch atomically.
+The **worktree** is the per-run sandbox. `.tachikoma/` lives inside it (gitignored). The `tachikoma/<slug>` branch is the durable record. ship phase squash-merges into base and (with user approval) removes the worktree + branch atomically.
 
-After a successful run, **enter Phase 6** — do NOT print manual git instructions to the user. Phase 6 walks them through the squash-merge, combined worktree+branch cleanup, and PR flow interactively.
+After a successful run, **enter ship phase** — do NOT print manual git instructions to the user. ship phase walks them through the squash-merge, combined worktree+branch cleanup, and PR flow interactively.
 
-`.tachikoma/base_branch` (single line, written at scaffold time) is the only piece of cross-session metadata Phase 6 needs that isn't recoverable from git itself.
+`.tachikoma/base_branch` (single line, written at scaffold time) is the only piece of cross-session metadata ship phase needs that isn't recoverable from git itself.
 
 ## Failure modes to watch for
 
@@ -1140,8 +1326,8 @@ After a successful run, **enter Phase 6** — do NOT print manual git instructio
 - Issue tracker auth expires mid-AFK run (remote mode) → loop logs error, exits, notification fires with `outcome=error`.
 - Feedback loop times out or never finishes → not handled by v1; user kills the loop manually.
 - User opens the worktree in another Claude Code session and starts editing → not handled; the per-worktree lockfile only prevents concurrent tachikoma loops in the *same* worktree, not concurrent humans there.
-- `git worktree add` fails because path exists or branch exists → handled by precondition 9 + Phase 3 step 3 collision check; refuse with the exact path/branch.
-- `git worktree remove` fails because of untracked files (e.g. `.tachikoma/run.log`) → Phase 6 retries with `--force`. Restart path in Phase R also uses `--force`.
-- Base branch isn't checked out anywhere when Phase 6 runs → `BASE_WT = MAIN_REPO`; Phase 6 checks out `<BASE_BRANCH>` there before merging, but only if main repo's working tree is clean. Otherwise refuses.
+- `git worktree add` fails because path exists or branch exists → handled by precondition 9 + scaffold phase step 3 collision check; refuse with the exact path/branch.
+- `git worktree remove` fails because of untracked files (e.g. `.tachikoma/run.log`) → ship phase retries with `--force`. Restart path in recover phase also uses `--force`.
+- Base branch isn't checked out anywhere when ship phase runs → `BASE_WT = MAIN_REPO`; ship phase checks out `<BASE_BRANCH>` there before merging, but only if main repo's working tree is clean. Otherwise refuses.
 - User runs `/tachikoma` from inside an active tachikoma worktree → precondition 4 refuses; tell them to `cd` to main repo or a non-tachikoma worktree.
-- `.tachikoma/base_branch` missing (e.g. user manually deleted it, or worktree was scaffolded by an old version of this skill) → Phase 6 falls back to asking the user which branch to merge into.
+- `.tachikoma/base_branch` missing (e.g. user manually deleted it, or worktree was scaffolded by an old version of this skill) → ship phase falls back to asking the user which branch to merge into.

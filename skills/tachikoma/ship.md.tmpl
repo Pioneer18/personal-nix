@@ -1,0 +1,134 @@
+You are running the Tachikoma ship phase — merge, PR, and cleanup — for the following worktree.
+
+Worktree:       {{WORKTREE_PATH}}
+Tachikoma branch: {{TACHIKOMA_BRANCH}}
+Base branch:    {{BASE_BRANCH}}
+PR target:      {{PR_TARGET_BRANCH}}
+Slug:           {{SLUG}}
+{{GITHUB_ISSUE_LINE}}
+Repo:           {{REPO_OWNER_NAME}}
+
+Execute every step below in order. Print progress as you go using the format:
+  `  <action>…` before each async operation
+  `  ✓ <result>` on success
+  `  ✗ <problem>` on failure (then follow the failure instructions for that step)
+
+Open with:
+```
+Ship — {{SLUG}}
+────────────────────────────────────────────────────
+```
+
+## Step 1 — Handle dirty base worktree
+
+Find the worktree where `{{BASE_BRANCH}}` is checked out. If not found, use `{{WORKTREE_PATH}}` and check out `{{BASE_BRANCH}}` there.
+
+Print `  Checking base worktree…`
+Run: `git status --porcelain` in the base worktree.
+
+- If clean: print `  ✓ Base worktree clean`
+- If dirty: print `  ⚠ Base worktree has uncommitted changes — stashing…`
+  Run: `git stash push -u -m "tachikoma auto-stash before ship ({{SLUG}})"`
+  Print `  ✓ Stashed  (will restore after merge)`
+  Set a flag to pop the stash after Step 3.
+
+After Step 3 (squash-merge), if stash was created:
+  Print `  Restoring stash…`
+  Run: `git stash pop`
+  - On success: print `  ✓ Stash restored`
+  - On conflict: print:
+    ```
+      ⚠ Stash pop conflict — your stashed changes conflict with the merge.
+        Resolve manually:
+          cd <base-worktree>
+          git status        # see conflicting files
+          git add <files> && git stash drop
+    ```
+    Proceed — the merge already landed, this doesn't block cleanup or the PR.
+
+## Step 2 — Log the diff
+
+Print `  Diffing changes…`
+Run:
+```
+git log {{TACHIKOMA_BRANCH}} ^{{BASE_BRANCH}} --oneline
+git diff {{BASE_BRANCH}}...{{TACHIKOMA_BRANCH}} --stat
+```
+Print output verbatim (indented 2 spaces), then print `  ✓ <N> commits, <M> files changed`
+
+## Step 3 — Squash-merge
+
+Print `  Squash-merging into {{BASE_BRANCH}}…`
+Run:
+```
+git checkout {{BASE_BRANCH}}   # in base worktree, only if not already there
+git merge --squash {{TACHIKOMA_BRANCH}}
+git commit -m "{{COMMIT_MESSAGE}}"
+```
+- On success: print `  ✓ Squash-merged  (<commit-sha>)` — capture the SHA.
+- On conflict: run `git merge --abort`, then print:
+  ```
+    ✗ Merge conflict — cannot auto-merge {{TACHIKOMA_BRANCH}} into {{BASE_BRANCH}}
+      Conflicting files:
+        <list files>
+      Work is on branch {{TACHIKOMA_BRANCH}} — run /tachikoma done to resolve manually.
+  ```
+  Then exit with code 1.
+
+## Step 4 — Worktree + branch cleanup
+
+Print `  Cleaning up worktree…`
+Run:
+```
+git worktree remove {{WORKTREE_PATH}}
+# if that fails due to untracked files:
+git worktree remove --force {{WORKTREE_PATH}}
+git branch -D {{TACHIKOMA_BRANCH}}
+```
+Print `  ✓ Worktree + branch removed`
+
+## Step 5 — Push + open PR
+
+Print `  Pushing {{BASE_BRANCH}}…`
+Check for a remote: `git remote -v`. If none, print `  ⚠ No remote — skipping PR` and jump to Step 6.
+
+Run: `git push -u origin {{BASE_BRANCH}}`
+Print `  ✓ Pushed`
+
+Print `  Opening PR…`
+Run:
+```
+gh pr create \
+  --title "{{PR_TITLE}}" \
+  --body "{{PR_BODY_ESCAPED}}" \
+  --base {{PR_TARGET_BRANCH}} \
+  --head {{BASE_BRANCH}}
+```
+Print `  ✓ PR opened  <PR_URL>`
+
+{{ISSUE_LABEL_BLOCK}}
+
+{{ISSUE_CLOSE_BLOCK}}
+
+## Step 7 — Work-queue cleanup
+
+Derive slug `{{SLUG}}`. Check `~/projects/personal-nix/wiki/work-requests/{{SLUG}}.md`:
+- Does not exist: skip silently.
+- PR was opened: print `  ✓ Work-request will auto-delete on PR merge`
+- No PR: delete the file. Print `  ✓ Work-request deleted`
+
+## Completion
+
+Print the completion footer:
+```
+────────────────────────────────────────────────────
+✓ Done — {{SLUG}}
+  PR:  <PR_URL or "none — no remote">
+  SHA: <commit-sha>
+────────────────────────────────────────────────────
+```
+
+Fire a macOS notification:
+```
+osascript -e 'display notification "Shipped: {{SLUG}}" with title "Tachikoma"'
+```

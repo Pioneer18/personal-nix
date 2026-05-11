@@ -13,6 +13,8 @@ PROGRESS_FILE="$REPO/.tachikoma/progress.txt"
 LOG_FILE="$REPO/.tachikoma/run.log"
 PID_FILE="$REPO/.tachikoma/run.pid"
 OUTCOME_FILE="$REPO/.tachikoma/outcome"
+SHIP_PROMPT_FILE="$REPO/.tachikoma/ship.md"
+SHIP_LOG_FILE="$REPO/.tachikoma/ship.log"
 
 usage() {
   cat <<EOF
@@ -37,6 +39,19 @@ case "$MODE" in
 esac
 
 cd "$REPO"
+
+# Symbol set — fall back to ASCII if locale isn't UTF-8.
+if [[ "${LANG:-}${LC_ALL:-}${LC_CTYPE:-}" == *[Uu][Tt][Ff]-8* ]]; then
+  SYM_START="🚀" SYM_OK="✓" SYM_ERR="❌" SYM_STOP="⏹" SYM_DONE="🏁" SYM_CAP="⏱" SYM_WARN="⚠"
+  RULE_MAIN="═══════════════════════════════════════════════════════════════"
+  RULE_ITER="─── iter"
+  RULE_SHIP="─── auto-ship"
+else
+  SYM_START="[start]" SYM_OK="[ok]" SYM_ERR="[err]" SYM_STOP="[stop]" SYM_DONE="[done]" SYM_CAP="[cap]" SYM_WARN="[warn]"
+  RULE_MAIN="==============================================================="
+  RULE_ITER="--- iter"
+  RULE_SHIP="--- auto-ship"
+fi
 
 # Lockfile: refuse if a live tachikoma is already running here.
 if [ -f "$PID_FILE" ]; then
@@ -76,10 +91,10 @@ stop_handler() {
   OUTCOME="stopped"
   {
     echo ""
-    echo "═══════════════════════════════════════════════════════════════"
-    echo "  ⏹ STOPPED — received signal at iter $ITER"
-    echo "  Run /tachikoma resume to continue, or /tachikoma done to review."
-    echo "═══════════════════════════════════════════════════════════════"
+    echo "$RULE_MAIN"
+    echo "  $SYM_STOP STOPPED — received signal at iter $ITER"
+    echo "  Run /tachikoma resume to continue, or /tachikoma done to ship what's committed."
+    echo "$RULE_MAIN"
     echo ""
   } | tee -a "$LOG_FILE" >&2
   trap - TERM
@@ -117,15 +132,15 @@ esac
 
 {
   echo ""
-  echo "═══════════════════════════════════════════════════════════════"
-  echo "  🚀 starting — repo: $(basename "$REPO") · branch: $BRANCH"
+  echo "$RULE_MAIN"
+  echo "  $SYM_START starting — repo: $(basename "$REPO") · branch: $BRANCH"
   echo "  cap: $MAX_ITER iter(s) · pid: $$"
-  echo "═══════════════════════════════════════════════════════════════"
+  echo "$RULE_MAIN"
   echo ""
 } | tee "$LOG_FILE"
 
 for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
-  echo "─── iter $ITER / $MAX_ITER ─────────────────────────────────────" | tee -a "$LOG_FILE"
+  echo "$RULE_ITER $ITER / $MAX_ITER ─────────────────────────────────────" | tee -a "$LOG_FILE"
 
   # Bail if working tree is dirty at iteration start — previous iteration
   # left something half-done. `git status --porcelain` is unborn-HEAD safe.
@@ -148,10 +163,10 @@ for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
   if [ $RC -ne 0 ]; then
     {
       echo ""
-      echo "═══════════════════════════════════════════════════════════════"
-      echo "  ❌ ERROR — claude exited with code $RC at iter $ITER"
-      echo "  Run /tachikoma resume to retry, or /tachikoma done to review."
-      echo "═══════════════════════════════════════════════════════════════"
+      echo "$RULE_MAIN"
+      echo "  $SYM_ERR ERROR — claude exited with code $RC at iter $ITER"
+      echo "  Run /tachikoma resume to retry, or /tachikoma done to ship what's committed."
+      echo "$RULE_MAIN"
       echo ""
     } | tee -a "$LOG_FILE" >&2
     OUTCOME="error"
@@ -161,34 +176,70 @@ for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
   if [[ "$RESULT" == *"$SENTINEL"* ]]; then
     {
       echo ""
-      echo "═══════════════════════════════════════════════════════════════"
-      echo "  🏁 TACHIKOMA COMPLETE"
+      echo "$RULE_MAIN"
+      echo "  $SYM_DONE TACHIKOMA COMPLETE"
       echo "  $ITER iteration(s) · branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
-      echo "  Run /tachikoma done to review and merge."
-      echo "═══════════════════════════════════════════════════════════════"
+      echo "$RULE_MAIN"
       echo ""
     } | tee -a "$LOG_FILE"
     OUTCOME="complete"
+
+    # Auto-ship: run merge + PR + cleanup via a fresh claude -p call.
+    # Falls back gracefully — if ship fails, the work is still committed on
+    # the tachikoma branch and the user can run /tachikoma done manually.
+    if [ -f "$SHIP_PROMPT_FILE" ]; then
+      {
+        echo ""
+        echo "$RULE_SHIP ──────────────────────────────────────────────────"
+        echo ""
+      } | tee -a "$LOG_FILE"
+
+      set +e
+      claude -p "$(cat "$SHIP_PROMPT_FILE")" \
+        --allowed-tools "Bash(git *) Bash(gh *) Bash(osascript *) Bash(cat *) Bash(echo *) Bash(rm *) Bash(mkdir *) Read Write Edit" \
+        --add-dir "$REPO" \
+        2>&1 | tee -a "$SHIP_LOG_FILE" "$LOG_FILE"
+      SHIP_RC=$?
+      set -e
+
+      if [ $SHIP_RC -ne 0 ]; then
+        {
+          echo ""
+          echo "$RULE_MAIN"
+          echo "  $SYM_WARN AUTO-SHIP FAILED (exit $SHIP_RC)"
+          echo "  Work is committed on branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+          echo "  Run /tachikoma done to ship manually."
+          echo "$RULE_MAIN"
+          echo ""
+        } | tee -a "$LOG_FILE"
+      fi
+    else
+      {
+        echo "  [ship] ship.md not found — skipping auto-ship. Run /tachikoma done manually."
+        echo ""
+      } | tee -a "$LOG_FILE"
+    fi
+
     exit 0
   fi
 
   LAST_LINE="$(tail -n 1 "$PROGRESS_FILE" 2>/dev/null || true)"
   {
     echo ""
-    echo "═══════════════════════════════════════════════════════════════"
-    echo "  ✓ MILESTONE — iter $ITER / $MAX_ITER"
+    echo "$RULE_MAIN"
+    echo "  $SYM_OK MILESTONE — iter $ITER / $MAX_ITER"
     echo "  ${LAST_LINE:-(progress.txt empty)}"
-    echo "═══════════════════════════════════════════════════════════════"
+    echo "$RULE_MAIN"
     echo ""
   } | tee -a "$LOG_FILE"
 done
 
 {
   echo ""
-  echo "═══════════════════════════════════════════════════════════════"
-  echo "  ⏱ CAP HIT — $MAX_ITER iterations without sentinel"
-  echo "  Run /tachikoma resume to continue, or /tachikoma done to review what's committed."
-  echo "═══════════════════════════════════════════════════════════════"
+  echo "$RULE_MAIN"
+  echo "  $SYM_CAP CAP HIT — $MAX_ITER iterations without sentinel"
+  echo "  Run /tachikoma resume to continue, or /tachikoma done to ship what's committed."
+  echo "$RULE_MAIN"
   echo ""
 } | tee -a "$LOG_FILE"
 OUTCOME="cap"
