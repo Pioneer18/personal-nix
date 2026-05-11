@@ -2,7 +2,7 @@
 title: "Tachikoma — autonomous AI coding loop"
 tags: [skill, agent, afk, tachikoma, claude-code, github, worktree, concurrent]
 last_updated: "2026-05-11"
-summary: "Pocock's Tachikoma Wiggum loop, adapted for this machine. Zero-friction: reads ~/.claude/tachikoma.conf, launches immediately, runs fully autonomously through squash-merge + PR. Only human touchpoint is reviewing the PR on GitHub."
+summary: "Pocock's Tachikoma Wiggum loop, adapted for this machine. Zero-friction: reads ~/.claude/tachikoma.conf, launches immediately, auto-ships on completion (squash-merge + PR). Only human touchpoint is reviewing the PR on GitHub. Queue drain runs all open work-requests sequentially."
 category: agent-dev
 link: "~/projects/personal-nix/skills/tachikoma/README.md"
 user_guide: "~/projects/personal-nix/skills/tachikoma/USER-GUIDE.md"
@@ -29,14 +29,14 @@ Autonomous AFK coding on any git repo. `/tachikoma --issue 138` → PR on GitHub
 **Worktree model**: Every `/tachikoma` creates a sibling git worktree at `<main-parent>/<repo>-tachikoma-<slug>/`. Multiple tachikomas can run concurrently on the same codebase — each in its own branch, working directory, and `.tachikoma/` state. Main repo can stay dirty during runs.
 
 **Run lifecycle** (fully autonomous — no prompts after launch):
-1. **Pre-flight** — reads `~/.claude/tachikoma.conf`, fetches issue (in `--issue` mode), auto-detects feedback loops, prints one-line launch summary.
-2. **Scaffold** — creates worktree, renders `tachikoma.sh` + `prompt.md`, commits scaffolding.
-3. **Loop** — `--once` (foreground) or `--afk N` (backgrounded). Errors auto-retry once; second failure pushes a draft PR.
-4. **Phase 6 (automatic)** — squash-merge → delete worktree + branch → push → open PR → close issue. All decisions logged in PR body. Only stops for merge conflicts.
+1. **Preflight** — reads `~/.claude/tachikoma.conf`, fetches issue (in `--issue` mode), auto-detects feedback loops, prints one-line launch summary.
+2. **Scaffold** — creates worktree, renders `tachikoma.sh` + `prompt.md` + `ship.md`, commits scaffolding.
+3. **Launch** — `--once` (foreground) or `--afk N` (backgrounded). Loop runs in light mode by default (progress banners only on terminal; all claude output to `run.log`). Pass `--dev` for full streaming. Errors auto-retry once; second failure pushes a draft PR.
+4. **Ship (automatic)** — squash-merge → delete worktree + branch → push → open PR → close issue. All decisions logged in PR body. Only stops for merge conflicts.
 
 **Lifecycle subcommands**:
-- `/tachikoma done` (`<slug>`?) — manually trigger Phase 6; picker if >1 complete
-- `/tachikoma resume` (`<slug>`?) — manually trigger Phase R; picker if >1 recoverable
+- `/tachikoma done` (`<slug>`?) — manually trigger ship phase (fallback when auto-ship fails); picker if >1 complete
+- `/tachikoma resume` (`<slug>`?) — re-launch an interrupted loop (recover phase); picker if >1 recoverable
 - `/tachikoma status` (`/tachikoma t`, `<slug>`?) — read-only telemetry
 - `/tachikoma stop` (`<slug>`? or `--all`) — SIGTERM
 
@@ -45,4 +45,8 @@ Autonomous AFK coding on any git repo. `/tachikoma --issue 138` → PR on GitHub
 - Feedback loops (typecheck/test/lint) must pass before commit
 - Single-feature-per-iteration constraint
 - Append-only `progress.txt`, atomic git commit per task
-- Per-iteration `✓ MILESTONE` banner streamed to `.tachikoma/run.log`
+- Per-iteration `✓ MILESTONE` banner on terminal; all output always written to `.tachikoma/run.log`
+
+**Log modes** — `tachikoma.sh --once` vs `tachikoma.sh --dev --once`:
+- **Light (default)**: only structured banners on terminal; raw claude output to log only. Queue drain always runs light.
+- **Dev (`--dev`)**: full claude output streams to terminal AND log. Use when debugging a single item interactively.

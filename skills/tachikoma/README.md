@@ -12,7 +12,7 @@ Pocock's "Tachikoma Wiggum" autonomous AI coding loop, adapted to this machine, 
 
 | Form | Behavior |
 |---|---|
-| `/tachikoma` | Plan + run. Mode (existing-issue / local / remote-greenfield) is inferred from context or asked via two preflight questions. Reads `~/.claude/tachikoma.conf` for defaults; runs first-run onboarding if the file is absent. New sibling worktree. |
+| `/tachikoma` | **Always starts a new task.** Mode (existing-issue / local / remote-greenfield) asked via two preflight questions. Reads `~/.claude/tachikoma.conf` for defaults; runs first-run onboarding if absent. New sibling worktree. Existing worktrees are not a blocker. |
 | `/tachikoma --remote` | Fast-path for remote-greenfield mode — skips the mode-selection questions. PRD via `to-prd` → `to-issues`. New worktree. |
 | `/tachikoma --issue <ref>` | Fast-path for existing-issue mode — skips the mode-selection questions. Uses GitHub issue body as PRD. New worktree. `<ref>` accepts `#138`, `138`, `org/repo#138`. |
 | `/tachikoma 138` or `/tachikoma #138` | Shorthand — a bare integer or `#N` first arg is normalized to `/tachikoma --issue <N>` before preconditions run. Same fast-path behavior. |
@@ -100,7 +100,8 @@ Reasoning so future-you doesn't relitigate.
 - **Three modes, inferred automatically (with fast-path flags).** `--remote` and `--issue <ref>` skip mode-selection; bare `/tachikoma` asks two questions to choose. Same loop logic across all three; only the task-source query and completion check differ.
 - **Ship auto-runs at sentinel.** `--once` immediately enters ship phase on exit 0 (orchestrator is still in-session). For `--afk`, `tachikoma.sh` runs `claude -p "$(cat .tachikoma/ship.md)"` after the sentinel is detected, before the script exits. If auto-ship fails, the work stays committed on the tachikoma branch and `/tachikoma done` retries the ship sequence manually.
 - **Recover phase runs only on explicit `/tachikoma resume`.** Automated runs self-heal (retry once → draft PR). The manual Resume/Review/Restart paths are preserved for when the user explicitly intervenes.
-- **Milestone banners stream during the run.** Per-iteration `✓ MILESTONE` banner, plus `🏁 TACHIKOMA COMPLETE` / `⏱ CAP HIT` banner on exit.
+- **Two log modes: light (default) and dev (`--dev`).** In light mode only structured progress banners print to the terminal; all raw claude output goes to `.tachikoma/run.log`. Pass `--dev` before the mode flag (`--dev --once` or `--dev --afk N`) to stream claude's full output to the terminal as well. Queue drain always runs light — `--dev` is for debugging a single item interactively.
+- **Milestone banners always print to the terminal.** Per-iteration `✓ MILESTONE` banner, plus `🏁 TACHIKOMA COMPLETE` / `⏱ CAP HIT` on exit — regardless of log mode. Raw claude output only reaches the terminal in dev mode.
 - **Allowed tools come from `~/.claude/tachikoma.conf`.** Default is a broad but glob-constrained list. No `--dangerously-skip-permissions`.
 - **Sentinel = `<promise>COMPLETE</promise>`.** Pocock-exact, XML-tagged.
 - **Per-iteration commit, never push.** Ship phase is the merge gate.

@@ -249,7 +249,7 @@ Auto-retry logic:
 | `cap` (hit iteration limit) | Auto-retry once at half the original cap. If it caps again: same draft-PR path. |
 | `stopped` (deliberate Ctrl+C) | Skip retry — jump directly to the **ship** phase on whatever was committed. |
 
-`/tachikoma resume` is also the explicit entry point for any time you want to take manual control of an interrupted worktree without waiting for the smart routing in bare `/tachikoma`.
+`/tachikoma resume` is the explicit entry point for taking manual control of an interrupted worktree. Since bare `/tachikoma` always starts a new run, `/tachikoma resume` is the only way to re-enter an existing interrupted worktree.
 
 ---
 
