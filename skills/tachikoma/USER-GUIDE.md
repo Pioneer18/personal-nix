@@ -77,7 +77,7 @@ The old "Phase 1 / Phase 6 / Phase R" numbering is gone. Use the names above.
 | `/tachikoma 138` | Shorthand for `--issue 138`. |
 | `/tachikoma #138` | Same shorthand. `org/repo#138` also works (must match cwd repo). |
 | `/tachikoma --remote` | Fast-path: take your goal through `to-prd` → `to-issues`, publish `ready-for-agent` issues, then loop against them. |
-| `/tachikoma` | Plan + run. Asks two mode-selection questions in preflight (existing issue? if not, local-or-remote?), then runs the appropriate flow. |
+| `/tachikoma` | Always starts a new task. Asks two mode-selection questions in preflight (existing issue? if not, local-or-remote?), then runs the appropriate flow. Existing worktrees are not affected. |
 | `/tachikoma done` | Manually trigger the **ship** phase on a completed worktree. Use this only when auto-ship failed. |
 | `/tachikoma done <slug>` | Ship a specific completed worktree. |
 | `/tachikoma resume` | Re-launch an interrupted loop (the **recover** phase). |
@@ -117,17 +117,11 @@ Asks two short mode-selection questions in preflight (is this for an existing is
 
 Takes your goal through `to-prd` → `to-issues`, publishes child issues labeled `ready-for-agent`, then runs the loop against them.
 
-### Bare `/tachikoma` smart routing
+### `/tachikoma` always starts a new task
 
-When you type `/tachikoma` with no args, it inspects existing worktrees in this repo before doing anything else:
+Bare `/tachikoma` always starts a brand-new run. It asks two mode-selection questions (existing issue? if not, local-or-remote?) and then goes straight into plan → scaffold → launch.
 
-- **One completed worktree** → auto-routes into the **ship** phase on that worktree (same as `/tachikoma done`).
-- **One interrupted worktree** → auto-routes into the **recover** phase (same as `/tachikoma resume`).
-- **Multiple terminal worktrees** → picker. You choose which one to act on.
-- **Only running worktrees** → tells you to use `/tachikoma status` or `/tachikoma stop` instead.
-- **No tachikoma worktrees** → proceeds with a brand-new run (two mode-selection questions, then plan + scaffold + launch).
-
-This is why `/tachikoma done` and `/tachikoma resume` exist as **explicit entry points** — when you know what you want, use them directly and skip the routing logic.
+Existing completed or interrupted worktrees in the repo are not a blocker — use `/tachikoma done` or `/tachikoma resume` to act on those.
 
 ---
 
@@ -154,11 +148,21 @@ All resolved values are logged in the PR body so you have full visibility.
 
 ### `--once` (foreground)
 
-Output streams to your terminal. When the loop exits with `outcome=complete`, the orchestrator runs the **ship** phase immediately (still in-session). No prompts.
+The loop runs in the foreground. By default it runs in **light mode**: only structured progress banners print to the terminal; all raw claude output goes to `.tachikoma/run.log`. Pass `--dev` for full streaming output:
+
+```bash
+# light (default) — progress banners only
+cd <WORKTREE_PATH> && .tachikoma/tachikoma.sh --once
+
+# dev mode — full streaming output to terminal
+cd <WORKTREE_PATH> && .tachikoma/tachikoma.sh --dev --once
+```
+
+When the loop exits with `outcome=complete`, the orchestrator runs the **ship** phase immediately (still in-session). No prompts.
 
 ### `--afk N` (backgrounded)
 
-The launch phase backgrounds the loop via `nohup ... & disown` so it survives the session ending. Fires a macOS notification when done. You see something like:
+The launch phase backgrounds the loop via `nohup ... & disown` so it survives the session ending. Runs in light mode by default (pass `--dev` if you want full output in the log — though `run.log` already captures everything regardless of mode). Fires a macOS notification when done. You see something like:
 
 ```
 ── Launched  (afk, cap 15)
