@@ -1,0 +1,42 @@
+{
+  "goal": "Write the 5 missing frontend files that complete the Tachikoma local web UI",
+  "quality_bar": "prototype",
+  "tasks": [
+    {
+      "id": "task-1",
+      "title": "Write src/index.css — Tailwind directives + dark base + custom scrollbar",
+      "status": "done",
+      "description": "Create mcps/tachikoma-ui/src/index.css with @tailwind base/components/utilities directives, html { background: #09090b; }, and webkit scrollbar styles (thin, zinc-700 thumb) for dark theme."
+    },
+    {
+      "id": "task-2",
+      "title": "Write src/main.tsx — React 18 entry point",
+      "status": "done",
+      "description": "Create mcps/tachikoma-ui/src/main.tsx: import React, ReactDOM, App, index.css. createRoot(document.getElementById('root')!). document.documentElement.classList.add('dark'). root.render(<React.StrictMode><App /></React.StrictMode>)."
+    },
+    {
+      "id": "task-3",
+      "title": "Write src/components/LogDrawer.tsx — SSE log panel",
+      "status": "done",
+      "description": "Create LogDrawer component: fixed right panel (40vw), BMO face img from /api/bmo/{bmoFace}.png, ScrollArea from @radix-ui/react-scroll-area, auto-scroll on new lines, Escape key close, streaming status footer. Props: slug, onClose, tachikomas."
+    },
+    {
+      "id": "task-4",
+      "title": "Write src/components/ChatBar.tsx — streaming chat input",
+      "status": "done",
+      "description": "Create ChatBar component: fixed bottom bar, message history with greeting, SSE streaming POST /api/chat, action buttons (dispatch/stop/abandon), textarea with Enter-to-send and auto-resize."
+    },
+    {
+      "id": "task-5",
+      "title": "Write src/App.tsx — root layout composing all components",
+      "status": "done",
+      "description": "Create App.tsx: useStatus hook, selectedSlug state, full-viewport flex-col layout with header, main content (WorkQueue + ActiveCards), LogDrawer right panel, ChatBar fixed bottom. Pass onCardClick to ActiveCards, onClose to LogDrawer."
+    },
+    {
+      "id": "task-6",
+      "title": "Verify: tsc --noEmit and npm run build pass",
+      "status": "done",
+      "description": "Run cd mcps/tachikoma-ui && npm install && npx tsc --noEmit, then npm run build. Fix any TypeScript errors. Emit sentinel when both pass."
+    }
+  ]
+}
