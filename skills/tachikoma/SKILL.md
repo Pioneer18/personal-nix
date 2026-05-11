@@ -937,8 +937,6 @@ Before anything else, scan for interrupted state from a prior session:
    ```
    Quality bar [production]:
    Iteration cap [10]:
-   Auto-open PRs? [yes]:
-   Auto-clean worktrees? [yes]:
    Keep system awake (caffeinate -d)? [yes]:
    ```
    The caffeinate preference is pre-answered `yes` if `--caffeinated` / `-C` was passed on the command line; otherwise the user chooses interactively. Record the answer as `caffeinated: true|false` for use in Step 2f.
@@ -999,8 +997,8 @@ This separates tachikoma's raw output from queue drain's ship phase actions in t
 **h. ship phase (abbreviated, uses batch preferences):**
 - Show diff stat verbatim.
 - Squash-merge: auto-approve unless conflicts arise (see failure handling below for conflict path).
-- Worktree + branch cleanup: if `auto-clean=yes`, skip the interactive prompt and clean up automatically.
-- PR: if `auto-open=yes`, derive title/body from goal + slug and open without review (user can edit on GitHub). Print the PR URL.
+- Worktree + branch cleanup: auto-ship handles this — skip the interactive prompt and clean up automatically.
+- PR: auto-ship opens the PR with title/body derived from goal + slug (user can edit on GitHub). Print the PR URL.
 - Issue close: skip for local-mode items. For `--issue`-sourced items, apply ship phase Step 7 smart default.
 
 **i. Mark item `status: done`**, bump `last_updated`, bump nothing on `failure_count` (success resets nothing — count is cumulative across all time).
