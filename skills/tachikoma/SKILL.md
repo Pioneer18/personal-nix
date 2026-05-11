@@ -31,7 +31,7 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 | `/tachikoma --remote` | **Fast-path** for remote-greenfield mode — skips the mode-selection grill questions. PRD → `to-prd` → `to-issues` → auto-promoted to `ready-for-agent`. New worktree per run. |
 | `/tachikoma --issue <ref>` | **Fast-path** for existing-issue mode — skips the mode-selection grill questions. Uses a GitHub issue body as the PRD; loop scoped to that single issue. New worktree per run. |
 | `/tachikoma 138` or `/tachikoma #138` | **Shorthand** — a bare integer or `#N` as the first positional arg is normalized to `/tachikoma --issue <N>`. Same fast-path behavior, same preconditions (7, 8). |
-| `/tachikoma done` (optionally `<slug>`) | Manually trigger ship phase. With `<slug>`, picks that specific completed worktree; otherwise picker if multiple complete, auto-pick if one. Auto-triggered when `/tachikoma` (no args) is run with a single completed worktree in the repo. |
+| `/tachikoma done` (optionally `<slug>`) | **Manual fallback for failed auto-ship** — auto-ship runs automatically after AFK completion (see Ship phase below), so this is only needed when that fails or for `--once` mode recovery. With `<slug>`, picks that specific completed worktree; otherwise picker if multiple complete, auto-pick if one. Auto-triggered when `/tachikoma` (no args) is run with a single completed worktree in the repo. |
 | `/tachikoma resume` (optionally `<slug>`) | Re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. Auto-offered when `/tachikoma` (no args) is run with recoverable state. |
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all tachikoma worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a tachikoma worktree. Picker if >1 running. `--all` halts every running tachikoma in the repo. |
@@ -832,7 +832,7 @@ Recent log (last 15 lines):
 
 Light suggestions based on state:
 - **RUNNING**: "Loop is healthy. Check back when notification fires."
-- **COMPLETE**: "Loop done. `/tachikoma done` to enter ship phase."
+- **COMPLETE**: "Loop done but auto-ship didn't finish (or it's a `--once` run still in-session). `/tachikoma done` to retry ship phase manually."
 - **CAP / ERROR / STOPPED**: "Loop ended in `<outcome>`. `/tachikoma resume` to see recover phase options."
 
 Keep under ~40 lines.
@@ -844,7 +844,7 @@ Tachikoma — <repo-name>  (<N> loops)
 ────────────────────────────────────────────────────
   RUNNING   <tachikoma-branch-1>   iter <N>/<M>   pid <pid>
   RUNNING   <tachikoma-branch-2>   iter <N>/<M>   pid <pid>
-  COMPLETE  <tachikoma-branch-3>   awaiting /tachikoma done
+  COMPLETE  <tachikoma-branch-3>   auto-ship didn't finish — /tachikoma done
   CAP       <tachikoma-branch-4>   ended at iter <N>/<M>
 ────────────────────────────────────────────────────
 /tachikoma status <slug>  ·  /tachikoma stop  ·  /tachikoma done
