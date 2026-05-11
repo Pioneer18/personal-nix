@@ -122,6 +122,122 @@ After the spec lands, walk every work-request in `wiki/work-requests/` and add `
 
 Confirm with the user before applying any chain that isn't obvious from slug naming.
 
+### 10. Ship-phase serialization (P0 — race fix)
+
+**Problem:** N workers finishing items at the same time all run `git checkout develop && git merge --squash && git push` (and with `auto_merge: true`, also `gh pr merge`). Concurrent writes to the base branch worktree + remote push contention = lost merges, 409s, drifted develop.
+
+**Fix:** the ship phase acquires a file lock around all git ops touching the base branch and remote.
+
+Update `ship.md.tmpl` Step 3 (squash-merge) and Step 5 (push + PR) to wrap the git operations in:
+
+```sh
+# Lock path is per-repo so different target_repos don't serialize against each other.
+LOCK_FILE="$HOME/.tachikoma/ship-$(echo "$REPO" | sed 's|/|-|g').lock"
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+flock 9   # blocks until lock acquired
+# ...git checkout, merge, push, gh pr merge...
+exec 9>&-  # release on scope exit
+```
+
+Lock granularity: per target_repo (different repos can ship in parallel). On `--auto_merge: true`, the `gh pr merge` poll is also inside the lock so develop pointer changes serialize. Expected serialization cost: ~30s per item × N workers worst case. Acceptable.
+
+Document the lock file path in SKILL.md ship phase section. Sitrep shows "waiting on ship lock (held by worker N)" for any worker stuck on the `flock` call.
+
+### 11. `claude -p` timeout wrap (P0 — hang fix)
+
+**Problem:** `tachikoma.sh:142` runs `claude -p "$(cat $prompt_file)"` with no time cap. If the API hangs (network stall, Anthropic outage mid-stream, runaway tool loop), the worker hangs forever. PID stays alive; drain looks healthy; nothing is happening.
+
+**Fix:** wrap each `claude -p` call in `timeout`, configurable via env var.
+
+In `tachikoma.sh.tmpl` `run_claude()`:
+
+```sh
+TACHIKOMA_ITER_TIMEOUT="${TACHIKOMA_ITER_TIMEOUT:-1800}"   # 30 min default
+# ...
+timeout "$TACHIKOMA_ITER_TIMEOUT" claude -p "$(cat "$prompt_file")" \
+  --allowed-tools "$tools" \
+  --add-dir "$REPO" \
+  --dangerously-skip-permissions \
+  2>&1 | tee -a "$log_file" > "$ITER_TMP"
+```
+
+On `timeout` (exit code 124): log + flag for retry (see item 13). After two timeouts: flip item to `needs-triage` with a "iter timeout" failure note.
+
+### 12. Sentinel strict match (P0 — false-completion fix)
+
+**Problem:** `tachikoma.sh:202` does `[[ "$RESULT" == *"$SENTINEL"* ]]` — matches `<promise>COMPLETE</promise>` anywhere in claude's output. Claude might echo this in a code example, a comment block, a docs snippet, or a chat-log it generates. False positive → script jumps to ship phase on incomplete work.
+
+**Fix:** match only on the final non-empty line, exact equality.
+
+In `tachikoma.sh.tmpl`:
+
+```sh
+LAST_NON_EMPTY_LINE="$(grep -v '^[[:space:]]*$' "$ITER_TMP" | tail -n 1)"
+if [[ "$LAST_NON_EMPTY_LINE" == "$SENTINEL" ]]; then
+  # ...complete branch
+fi
+```
+
+Document in `prompt.md.tmpl` (line ~117 region): "the sentinel MUST be the final line of your output — nothing after it. If you have additional context to print, put it before the sentinel."
+
+### 13. Retry on transient failures (P1 — resilience)
+
+**Problem:** `tachikoma.sh:189-200` exits the entire worker on any non-zero RC from `claude -p`. API rate limits, transient 503s, OAuth refresh blips, network stalls → instant failure, no retry. A long drain dies on a 30-second blip.
+
+**Fix:** retry-once with backoff for exit codes that look transient.
+
+In `tachikoma.sh.tmpl`:
+
+```sh
+TRANSIENT_RCS=(1 124 130)
+if [ $RC -ne 0 ]; then
+  if printf '%s\n' "${TRANSIENT_RCS[@]}" | grep -qx "$RC" && [ -z "${RETRIED:-}" ]; then
+    echo "[tachikoma] transient RC=$RC at iter $ITER — retrying once in 30s..." | tee -a "$LOG_FILE" >&2
+    sleep 30
+    RETRIED=1
+    run_claude "$PROMPT_FILE" "$LOG_FILE"
+    RC=$CLAUDE_RC
+  fi
+  # ...existing error branch if still non-zero after retry
+fi
+```
+
+`RC=124` covers the timeout case from item 11. `RC=130` is SIGINT. `RC=1` is the generic claude exit. Tune the list once real-world failures show patterns.
+
+After retry attempt: do NOT retry again in this iter. Two strikes = real failure, surface as today.
+
+### 14. Explicit spawn loop in foreground orchestrator (P1 — observed gap)
+
+**Problem:** the multi-worker spec (parallel queue drain via `/tachikoma queue N`) says "launches N detached workers" but doesn't define the exact bash. In the 11 May 2026 session, `/tachikoma queue 3` spawned only 1 worker — the orchestrator session had old SKILL.md cached, so the parallel branch never fired. Even with the right spec cached, an under-specified "launch N" instruction risks repeated drift.
+
+**Fix:** spec the exact spawn loop the foreground orchestrator must execute. Append to SKILL.md "Worker model" subsection (the one added in commit 8906e21):
+
+```markdown
+**Foreground orchestrator spawn loop (must run verbatim):**
+
+After batch preferences are written to ~/.claude/tachikoma.conf, the foreground
+orchestrator runs:
+
+\`\`\`sh
+mkdir -p ~/.tachikoma
+for i in $(seq 1 N); do
+  nohup claude -p "/tachikoma queue" \
+    > ~/.tachikoma/drain-worker-$i.log 2>&1 &
+  echo $! > ~/.tachikoma/drain-worker-$i.pid
+  WORKER_PIDS+=($!)
+done
+echo "Launched ${#WORKER_PIDS[@]} workers: ${WORKER_PIDS[*]}"
+\`\`\`
+
+Then exits the foreground session. Subsequent `/tachikoma sitrep` reads
+~/.tachikoma/drain-worker-*.pid files for liveness checks.
+```
+
+This makes the orchestrator's behavior unambiguous; agent invocations have less room to under-implement.
+
+Also update `/tachikoma sitrep` spec to read `~/.tachikoma/drain-worker-*.pid` files (canonical source of truth) in addition to state files.
+
 ## Acceptance criteria
 
 1. `blocked_by` accepted in work-request frontmatter; missing field treated as `[]`.
@@ -134,6 +250,11 @@ Confirm with the user before applying any chain that isn't obvious from slug nam
 8. Manual end-to-end test: queue with proxy-01..03 having a chain runs sequentially under `/tachikoma queue 3` (3 workers launch, 2 exit immediately, 1 serializes the chain).
 9. Docs updated across all 5 files.
 10. All proxy-* and major-mode-* work-request files have their `blocked_by` chains populated.
+11. Ship phase serializes via `~/.tachikoma/ship-<repo>.lock` (per target_repo); concurrent ship attempts queue on `flock`. Two parallel `--once` runs against the same repo demonstrably do not race develop.
+12. `claude -p` calls are wrapped in `timeout $TACHIKOMA_ITER_TIMEOUT` (default 1800s); on timeout, RC=124 triggers retry path (item 13) or, if already retried, fails the iter cleanly.
+13. Transient-RC retry: on `RC ∈ {1, 124, 130}`, worker retries the iter once after a 30s sleep. Second non-zero = real failure. Verified by injecting a one-shot fake `claude` wrapper that exits 124 on first call and 0 on second.
+14. Sentinel match requires the final non-empty line to equal `<promise>COMPLETE</promise>` exactly. Verified by emitting the sentinel inside a code block in a prior line — loop must NOT trigger completion.
+15. Foreground orchestrator spawn loop is spec'd verbatim in SKILL.md; agent invocations of `/tachikoma queue N` produce exactly N detached workers with PID files at `~/.tachikoma/drain-worker-<i>.pid`. `/tachikoma sitrep` reads those PID files as source of truth.
 
 ## Out of scope
 
