@@ -5,6 +5,8 @@ import {
   dispatch,
   stopTachikoma,
   abandonTachikoma,
+  createWorkRequest,
+  deleteWorkRequest,
 } from "@/lib/api";
 
 interface UiMessage extends ChatMessage {
@@ -52,6 +54,16 @@ export function ChatBar() {
         await stopTachikoma(action.slug);
       } else if (action.type === "abandon") {
         await abandonTachikoma(action.slug);
+      } else if (action.type === "create_work_request") {
+        await createWorkRequest({
+          slug: action.slug,
+          target_repo: action.target_repo,
+          goal: action.goal,
+          stop_condition: action.stop_condition,
+          quality_bar: action.quality_bar,
+        });
+      } else if (action.type === "delete_work_request") {
+        await deleteWorkRequest(action.slug);
       }
     } catch (err) {
       console.error("[ChatBar] action error:", err);
@@ -134,7 +146,10 @@ export function ChatBar() {
   const actionLabel = (action: ActionEvent): string => {
     if (action.type === "dispatch") return `Dispatch (cap ${action.cap})`;
     if (action.type === "stop") return `Stop ${action.slug}`;
-    return `Abandon ${action.slug}`;
+    if (action.type === "abandon") return `Abandon ${action.slug}`;
+    if (action.type === "create_work_request") return `Create request: ${action.slug}`;
+    if (action.type === "delete_work_request") return `Delete ${action.slug}`;
+    return "";
   };
 
   return (

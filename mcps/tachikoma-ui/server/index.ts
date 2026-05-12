@@ -9,6 +9,9 @@ import {
   tachikomaStatus,
   tachikomaDispatch,
   readWorkRequests,
+  reconcileOnBoot,
+  createWorkRequest,
+  deleteWorkRequest,
   PROJECTS_DIR,
 } from "./state.ts";
 import { streamChat } from "./claude.ts";
@@ -278,6 +281,49 @@ app.post("/api/cleanup", (req, res) => {
   }
 });
 
+// ── POST /api/work-request ────────────────────────────────────────────────────
+app.post("/api/work-request", (req, res) => {
+  const body = req.body as {
+    slug?: unknown;
+    target_repo?: unknown;
+    goal?: unknown;
+    stop_condition?: unknown;
+    quality_bar?: unknown;
+  };
+  if (
+    typeof body.slug !== "string" ||
+    typeof body.goal !== "string" ||
+    typeof body.stop_condition !== "string"
+  ) {
+    res.status(400).json({ ok: false, error: "slug, goal, stop_condition required" });
+    return;
+  }
+  try {
+    createWorkRequest({
+      slug: body.slug,
+      targetRepo: typeof body.target_repo === "string" ? body.target_repo : "~/projects/personal-nix",
+      goal: body.goal,
+      stopCondition: body.stop_condition,
+      qualityBar: typeof body.quality_bar === "string" ? body.quality_bar : "production",
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[server] /api/work-request error:", err);
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Failed to create" });
+  }
+});
+
+// ── DELETE /api/work-request/:slug ────────────────────────────────────────────
+app.delete("/api/work-request/:slug", (req, res) => {
+  try {
+    deleteWorkRequest(req.params.slug);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[server] DELETE /api/work-request error:", err);
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Failed to delete" });
+  }
+});
+
 // ── POST /api/dispatch ────────────────────────────────────────────────────────
 app.post("/api/dispatch", async (req, res) => {
   const body = req.body as { cap?: unknown };
@@ -317,6 +363,11 @@ if (existsSync(distPath)) {
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
+try {
+  reconcileOnBoot();
+} catch (e) {
+  console.error("[reconcile] Boot reconciliation failed (non-fatal):", e);
+}
 app.listen(4000, () => {
   console.log("[server] Tachikoma UI running on http://localhost:4000");
 });

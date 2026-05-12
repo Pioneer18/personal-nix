@@ -46,4 +46,13 @@ export interface ChatMessage {
 export type ActionEvent =
   | { type: "dispatch"; cap: number }
   | { type: "stop"; slug: string }
-  | { type: "abandon"; slug: string };
+  | { type: "abandon"; slug: string }
+  | { type: "delete_work_request"; slug: string }
+  | {
+      type: "create_work_request";
+      slug: string;
+      target_repo: string;
+      goal: string;
+      stop_condition: string;
+      quality_bar: string;
+    };

@@ -28,6 +28,7 @@ Pioneer18's machine wiki. Knowledge that outlives any single Claude session, que
 | `/wiki <subdir> <query>` | Search within that subdir |
 | `/wiki add` | Guided capture, defaults to `inbox/` |
 | `/wiki add <subdir>` | Guided capture into specific subdir |
+| `/wiki help` | Display the user guide in chat. |
 
 If `<subdir>` is not in the fixed vocabulary above, refuse and list valid subdirs.
 
@@ -135,6 +136,56 @@ If a user request would violate this, surface the concern, suggest the auto-memo
 - **Frontmatter malformed in an entry** — when scanning, skip and warn (don't fail the whole search).
 - **Slug collision** — see add flow step 4.
 - **Wiki dir missing entirely** — wiki/ should always exist (it's tracked in personal-nix). If missing, tell user the personal-nix repo may be in a bad state; do not auto-recreate.
+
+## Help
+
+**When invoked as `/wiki help`:** display the following user guide in chat.
+
+---
+
+## Wiki — User Guide
+
+Pioneer18's personal knowledge base at `~/projects/personal-nix/wiki/`. Syncs across Macs via the personal-nix repo.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `/wiki` | Show the wiki index (INDEX.md) |
+| `/wiki <query>` | Search all subdirs for a query |
+| `/wiki <subdir>` | List all entries in a subdir |
+| `/wiki <subdir> <query>` | Search within a specific subdir |
+| `/wiki add` | Capture a new entry (guided); defaults to `inbox/` |
+| `/wiki add <subdir>` | Capture into a specific subdir |
+| `/wiki help` | Show this guide |
+
+### Subdirectories
+
+| Subdir | What goes here |
+|---|---|
+| `tools/` | Stubs for tools, skills, MCPs, CLIs |
+| `recipes/` | How-to walkthroughs |
+| `decisions/` | Design decisions and rationale (ADR-lite) |
+| `glossary/` | Term → definition |
+| `runbooks/` | "When X breaks, do Y" |
+| `inbox/` | Uncategorized captures (triage later) |
+| `notes/` | Random saves, tag-categorized |
+| `work-requests/` | Work items for tachikoma |
+
+### Example workflow
+
+```
+/wiki add recipes        — capture a new how-to
+/wiki recipes auth       — search recipes for "auth"
+/wiki tools tachikoma    — look up the tachikoma tool stub
+/wiki add inbox          — quick capture; triage later
+```
+
+### Privacy
+
+`personal-nix` is a public repo. Don't write API keys, passwords, RelyMD business logic, or personal third-party info. Use auto-memory (`~/.claude/projects/.../memory/`) for sensitive context.
+
+---
 
 ## Pointer to human-facing docs
 

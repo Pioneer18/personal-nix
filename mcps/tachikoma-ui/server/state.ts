@@ -3,6 +3,7 @@ import {
   existsSync,
   readFileSync,
   writeFileSync,
+  unlinkSync,
   mkdirSync,
   readdirSync,
   chmodSync,
@@ -13,6 +14,7 @@ import os from "os";
 const HOME = os.homedir();
 export const PROJECTS_DIR = join(HOME, "projects");
 const PERSONAL_NIX_DIR = join(PROJECTS_DIR, "personal-nix");
+const QUEUE_DRAIN_STATE_FILE = join(HOME, ".tachikoma", "queue-drain.state");
 export const WORK_REQUESTS_DIR = join(PERSONAL_NIX_DIR, "wiki", "work-requests");
 const TACHIKOMA_SKILLS_DIR = join(HOME, ".claude", "skills", "tachikoma");
 export const SENTINEL = "<promise>COMPLETE</promise>";
@@ -302,6 +304,177 @@ export function readWorkRequests(): WorkRequest[] {
       ];
     })
     .sort((a, b) => a.priority - b.priority || a.slug.localeCompare(b.slug));
+}
+
+// ── Boot reconciliation ───────────────────────────────────────────────────────
+
+function getMainRepoPath(worktreePath: string): string {
+  const gitCommonDir = execSync(
+    `git -C "${worktreePath}" rev-parse --path-format=absolute --git-common-dir`,
+    { encoding: "utf8", stdio: "pipe" }
+  ).trim();
+  return dirname(gitCommonDir);
+}
+
+// Uses `git cherry` to detect squash-merged commits. Returns true when all
+// non-scaffold commits on `branch` have an equivalent patch in `baseBranch`.
+function isWorkAlreadyApplied(
+  worktreePath: string,
+  branch: string,
+  baseBranch: string
+): boolean {
+  try {
+    const cherry = execSync(
+      `git -C "${worktreePath}" cherry -v "${baseBranch}" "${branch}"`,
+      { encoding: "utf8", stdio: "pipe" }
+    ).trim();
+    if (!cherry) return true;
+    const lines = cherry.split("\n").filter(Boolean);
+    const workLines = lines.filter((l) => !l.includes("scaffold tachikoma loop"));
+    if (workLines.length === 0) return true;
+    return workLines.every((l) => l.startsWith("-"));
+  } catch {
+    return false;
+  }
+}
+
+function updateWorkRequestStatus(filePath: string, from: string, to: string): void {
+  const today = new Date().toISOString().slice(0, 10);
+  const content = readFileSync(filePath, "utf8");
+  const updated = content
+    .replace(`status: ${from}`, `status: ${to}`)
+    .replace(/last_updated: \S+/, `last_updated: ${today}`);
+  if (updated !== content) writeFileSync(filePath, updated);
+}
+
+export function reconcileOnBoot(): void {
+  const log = (msg: string) => console.log(`[reconcile] ${msg}`);
+
+  // 1. Clear stale queue-drain.state when no session is actually running.
+  if (existsSync(QUEUE_DRAIN_STATE_FILE)) {
+    try {
+      const { data } = parseFrontmatter(readFileSync(QUEUE_DRAIN_STATE_FILE, "utf8"));
+      const worktree = (data.current_worktree ?? "").trim();
+      let alive = false;
+      if (worktree) {
+        const pidFile = join(worktree, ".tachikoma", "run.pid");
+        if (existsSync(pidFile)) {
+          const pid = parseInt(readFileSync(pidFile, "utf8").trim());
+          if (!isNaN(pid)) alive = pidAlive(pid);
+        }
+      }
+      if (!alive) {
+        unlinkSync(QUEUE_DRAIN_STATE_FILE);
+        log("Removed stale queue-drain.state (no live session)");
+      }
+    } catch {
+      try { unlinkSync(QUEUE_DRAIN_STATE_FILE); } catch {}
+      log("Removed unparseable queue-drain.state");
+    }
+  }
+
+  // 2. For each complete worktree whose work-request is open/grabbed, check
+  //    whether the work was already squash-merged into the base branch. If so,
+  //    mark the work-request done and remove the worktree + branch.
+  const worktrees = tachikomaStatus();
+  const workRequests = readWorkRequests();
+
+  for (const wt of worktrees) {
+    if (wt.status !== "complete") continue;
+
+    const wr = workRequests.find((r) => r.slug === wt.slug);
+    if (!wr || (wr.status !== "open" && wr.status !== "grabbed")) continue;
+
+    const baseBranchFile = join(wt.worktree, ".tachikoma", "base_branch");
+    const baseBranch = existsSync(baseBranchFile)
+      ? readFileSync(baseBranchFile, "utf8").trim()
+      : "master";
+
+    if (isWorkAlreadyApplied(wt.worktree, wt.branch, baseBranch)) {
+      log(`${wt.slug}: work already on ${baseBranch} — marking done, cleaning up worktree`);
+      try {
+        updateWorkRequestStatus(wr.filePath, wr.status, "done");
+      } catch (e) {
+        log(`  Failed to update work-request: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      try {
+        const mainRepo = getMainRepoPath(wt.worktree);
+        try {
+          execSync(`git -C "${mainRepo}" worktree remove "${wt.worktree}"`, { stdio: "pipe" });
+        } catch {
+          execSync(`git -C "${mainRepo}" worktree remove --force "${wt.worktree}"`, { stdio: "pipe" });
+        }
+        execSync(`git -C "${mainRepo}" branch -D "${wt.branch}"`, { stdio: "pipe" });
+        log(`  Cleaned: ${wt.branch}`);
+      } catch (e) {
+        log(`  Git cleanup failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    } else {
+      log(`${wt.slug}: complete, work not yet on ${baseBranch} — skip (needs /tachikoma done)`);
+    }
+  }
+
+  // 3. Grabbed work-requests with no matching worktree → reset to open so they
+  //    can be picked up again.
+  const remaining = tachikomaStatus();
+  for (const wr of workRequests) {
+    if (wr.status !== "grabbed") continue;
+    if (!remaining.some((wt) => wt.slug === wr.slug)) {
+      log(`${wr.slug}: grabbed but no worktree — resetting to open`);
+      try {
+        updateWorkRequestStatus(wr.filePath, "grabbed", "open");
+      } catch (e) {
+        log(`  Failed to reset: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+}
+
+// ── Work request CRUD ─────────────────────────────────────────────────────────
+
+export function createWorkRequest(opts: {
+  slug: string;
+  targetRepo: string;
+  goal: string;
+  stopCondition: string;
+  qualityBar: string;
+}): void {
+  const filePath = join(WORK_REQUESTS_DIR, `${opts.slug}.md`);
+  if (existsSync(filePath)) throw new Error(`Work request already exists: ${opts.slug}`);
+  const today = new Date().toISOString().slice(0, 10);
+  const content = `---
+status: open
+target_repo: ${opts.targetRepo}
+github_issue: ""
+failure_count: 0
+last_updated: ${today}
+---
+
+# ${opts.slug}
+
+## Goal
+
+${opts.goal}
+
+## Stop condition
+
+${opts.stopCondition}
+
+## Quality bar
+
+${opts.qualityBar}
+`;
+  mkdirSync(WORK_REQUESTS_DIR, { recursive: true });
+  writeFileSync(filePath, content);
+}
+
+export function deleteWorkRequest(slug: string): void {
+  const filePath = join(WORK_REQUESTS_DIR, `${slug}.md`);
+  if (!existsSync(filePath)) throw new Error(`Work request not found: ${slug}`);
+  const content = readFileSync(filePath, "utf8");
+  const { data } = parseFrontmatter(content);
+  if (data.status !== "done") throw new Error(`Can only delete done work requests (status: ${data.status})`);
+  unlinkSync(filePath);
 }
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────

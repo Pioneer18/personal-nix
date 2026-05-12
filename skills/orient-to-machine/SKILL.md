@@ -5,6 +5,13 @@ description: Architectural map of Pioneer18's Mac (nix-darwin + home-manager, tw
 
 # Machine map
 
+## Invocation
+
+| Form | Behavior |
+|---|---|
+| `/orient-to-machine` | Load the full machine map into context. |
+| `/orient-to-machine help` | Display the user guide in chat. |
+
 ## TL;DR
 
 This Mac runs a two-layer nix-darwin + home-manager setup. One command — `dev` — rebuilds both layers atomically. The team layer is shared; the personal layer is private and reset-proof via a public personal-nix repo + macOS Keychain (iCloud-synced) for secrets.
@@ -103,6 +110,53 @@ The script is idempotent. If iCloud Keychain has already synced from another Mac
 - **`~/.gitconfig.backup`** appears after each `dev` run because team home-manager re-detects the prior file. Safe to delete once you've migrated any custom settings.
 - **Some packages are brew-only, not in nixpkgs** (e.g. `displayplacer`). For those, add to `homebrew.brews` in `hosts/jonathan-sells-darwin.nix` instead.
 - **MCP changes need a fresh Claude Code session** — `claude mcp add` updates `~/.claude.json` but already-running sessions don't reload.
+
+## Help
+
+**When invoked as `/orient-to-machine help`:** display the following user guide in chat.
+
+---
+
+## Orient to Machine — User Guide
+
+Loads Pioneer18's Mac architecture into context so Claude understands where things live and how to change them.
+
+### When to use it
+
+- Starting a new session that will touch nix config, MCPs, or skills
+- Asking "where does X live?" or "how do I add Y?"
+- Planning any modification to system config
+- Debugging a failed `dev` run
+
+### What it covers
+
+| Topic | Details |
+|---|---|
+| Repo layout | dev-environment (team) + personal-nix (personal) |
+| Layering rules | What to edit and where |
+| Task recipes | Add CLI tool, MCP server, skill, secret, GUI app |
+| The `dev` command | Rebuilds both layers atomically |
+| Rollback | `sudo darwin-rebuild --rollback` |
+| Bootstrap | One-command fresh-Mac setup |
+| Common gotchas | PATH issues, gitignored files, MCP reload, brew-only packages |
+
+### Quick recipes
+
+```
+Add CLI tool   → personal-nix/packages.nix → dev
+Add MCP server → personal-nix/mcp.nix      → dev → restart Claude
+Add skill      → personal-nix/skills/<name>/SKILL.md (no rebuild needed)
+Roll back      → sudo darwin-rebuild --rollback
+```
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `/orient-to-machine` | Load the full machine map into context |
+| `/orient-to-machine help` | Show this guide |
+
+---
 
 ## When NOT to use this skill
 

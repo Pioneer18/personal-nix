@@ -136,11 +136,13 @@ run_claude() {
     claude -p "$(cat "$prompt_file")" \
       --allowed-tools "$tools" \
       --add-dir "$REPO" \
+      --dangerously-skip-permissions \
       2>&1 | tee -a "$log_file" | tee "$ITER_TMP"
   else
     claude -p "$(cat "$prompt_file")" \
       --allowed-tools "$tools" \
       --add-dir "$REPO" \
+      --dangerously-skip-permissions \
       2>&1 | tee -a "$log_file" > "$ITER_TMP"
   fi
   CLAUDE_RC=${PIPESTATUS[0]}

@@ -36,6 +36,7 @@ read_keychain() {
 echo "→ Reading secrets from Keychain"
 read_keychain "claude_code_oauth" "CLAUDE_CODE_OAUTH_TOKEN"
 read_keychain "github_token" "GITHUB_TOKEN"
+read_keychain "anthropic_api_key" "ANTHROPIC_API_KEY"
 
 # Aliases for tools that look for different env var names.
 {

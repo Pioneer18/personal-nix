@@ -41,6 +41,30 @@ export async function cleanupTachikoma(slug: string): Promise<void> {
   if (!res.ok) throw new Error(`/api/cleanup failed: ${res.status}`);
 }
 
+export async function createWorkRequest(opts: {
+  slug: string;
+  target_repo: string;
+  goal: string;
+  stop_condition: string;
+  quality_bar: string;
+}): Promise<void> {
+  const res = await fetch("/api/work-request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(opts),
+  });
+  const data = await res.json() as { ok: boolean; error?: string };
+  if (!data.ok) throw new Error(data.error ?? "Failed to create work request");
+}
+
+export async function deleteWorkRequest(slug: string): Promise<void> {
+  const res = await fetch(`/api/work-request/${encodeURIComponent(slug)}`, {
+    method: "DELETE",
+  });
+  const data = await res.json() as { ok: boolean; error?: string };
+  if (!data.ok) throw new Error(data.error ?? "Failed to delete work request");
+}
+
 export async function dispatch(cap: number): Promise<object> {
   const res = await fetch("/api/dispatch", {
     method: "POST",

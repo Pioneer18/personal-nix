@@ -1,19 +1,34 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Response } from "express";
 
-const SYSTEM_PROMPT = `You are the Tachikoma launch assistant. Your job is to help the user launch, monitor, and control their Tachikoma autonomous coding runs.
+const SYSTEM_PROMPT = `You are the Tachikoma launch assistant — Ghost in the Shell vibes, concise and direct. You help the user manage their autonomous coding queue.
 
-You have a playful, slightly Ghost-in-the-Shell flavored personality. Be concise and direct.
+## What you can do
 
-When the user wants to launch a new run:
-- Ask for the work request slug or let them know you'll use the next one in the queue
-- Ask for the iteration cap (default 5, max 50)
-- When ready to dispatch, output EXACTLY: {"action": "dispatch", "cap": N}
+**Launch a run**
+Ask for the iteration cap (default 5, max 50), then output:
+{"action": "dispatch", "cap": N}
 
-When the user wants to stop a run, output: {"action": "stop", "slug": "..."}
-When the user wants to abandon a run, output: {"action": "abandon", "slug": "..."}
+**Stop / abandon a run**
+{"action": "stop", "slug": "..."}
+{"action": "abandon", "slug": "..."}
 
-Keep responses short. Use tachikoma lore vocabulary (Ghost, Shell, run, iter).`;
+**Create a new work request**
+Gather: goal (required), target_repo (default ~/projects/personal-nix), stop_condition (required), quality_bar (prototype|production|library, default production).
+Derive slug: lowercase, dashes, max 40 chars, from the goal.
+Then output:
+{"action": "create_work_request", "slug": "...", "target_repo": "...", "goal": "...", "stop_condition": "...", "quality_bar": "..."}
+
+**Delete a done work request**
+{"action": "delete_work_request", "slug": "..."}
+Only for items with status=done.
+
+## Rules
+- Keep responses short — one or two sentences max
+- Ask only the missing required fields, not everything at once
+- Don't pretend to use tools you don't have — your only output channel is the JSON actions above`;
+
+
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -26,11 +41,20 @@ interface DispatchAction {
 }
 
 interface SlugAction {
-  action: "stop" | "abandon";
+  action: "stop" | "abandon" | "delete_work_request";
   slug: string;
 }
 
-type ActionEvent = DispatchAction | SlugAction;
+interface CreateWorkRequestAction {
+  action: "create_work_request";
+  slug: string;
+  target_repo: string;
+  goal: string;
+  stop_condition: string;
+  quality_bar: string;
+}
+
+type ActionEvent = DispatchAction | SlugAction | CreateWorkRequestAction;
 
 function extractAction(text: string): ActionEvent | null {
   const match = text.match(/\{[^{}]*"action"\s*:\s*"[^"]+[^{}]*\}/);
@@ -48,10 +72,27 @@ function extractAction(text: string): ActionEvent | null {
       return { action: "dispatch", cap: obj.cap };
     }
     if (
-      (obj.action === "stop" || obj.action === "abandon") &&
+      (obj.action === "stop" ||
+        obj.action === "abandon" ||
+        obj.action === "delete_work_request") &&
       typeof obj.slug === "string"
     ) {
       return { action: obj.action, slug: obj.slug };
+    }
+    if (
+      obj.action === "create_work_request" &&
+      typeof obj.slug === "string" &&
+      typeof obj.goal === "string" &&
+      typeof obj.stop_condition === "string"
+    ) {
+      return {
+        action: "create_work_request",
+        slug: obj.slug,
+        target_repo: typeof obj.target_repo === "string" ? obj.target_repo : "~/projects/personal-nix",
+        goal: obj.goal,
+        stop_condition: obj.stop_condition,
+        quality_bar: typeof obj.quality_bar === "string" ? obj.quality_bar : "production",
+      };
     }
     return null;
   } catch {
@@ -80,7 +121,7 @@ export async function streamChat(
 
   try {
     const stream = await client.messages.stream({
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-4-6",
       max_tokens: 1024,
       system: SYSTEM_PROMPT,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
@@ -103,6 +144,10 @@ export async function streamChat(
       if (action.action === "dispatch") {
         res.write(
           `event: action\ndata: ${JSON.stringify({ type: "dispatch", cap: action.cap })}\n\n`
+        );
+      } else if (action.action === "create_work_request") {
+        res.write(
+          `event: action\ndata: ${JSON.stringify({ type: "create_work_request", ...action })}\n\n`
         );
       } else {
         res.write(
