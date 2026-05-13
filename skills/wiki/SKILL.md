@@ -195,7 +195,33 @@ Pioneer18's personal knowledge base at `~/projects/personal-nix/wiki/`. Syncs ac
 /wiki recipes auth       — search recipes for "auth"
 /wiki tools tachikoma    — look up the tachikoma tool stub
 /wiki add inbox          — quick capture; triage later
+/wiki add seeds          — capture a pre-work-request idea
+/wiki seeds              — list all pending ideas
 ```
+
+### Seeds workflow (idea → work-request → tachikoma)
+
+`seeds/` is the inbox for ideas you know you want to act on later but aren't ready to commit to as a full work-request. Lower friction than `work-requests/` (no required `target_repo`, no acceptance criteria) — just a captured thought.
+
+The pipeline:
+
+```
+/wiki add seeds                       — capture (title, tags, optional target_repo, body)
+/wiki seeds                           — browse pending ideas
+/wiki seeds <query>                   — search them
+/grill-me wiki/seeds/<slug>.md        — interview to expand into a work-request spec
+/create-work-request <slug>           — promote: writes work-requests/<slug>.md with
+                                        `promoted_from: <slug>` and DELETES the seed
+```
+
+Key properties:
+
+- **Capture is friction-free.** Only `title` + `tags` required. Body and `target_repo` are optional — fill them in later during grilling.
+- **Promotion = deletion.** No `status: promoted` state, no archive subdir. Git history is the audit trail.
+- **Repo-agnostic seeds are fine.** Some ideas don't have an obvious target repo yet; that's the whole point of capturing them before committing to a work-request.
+- **Interim surface.** When PROXY's notebook UI ships (M6 / v1.5+), a one-shot importer maps every seed into a `notebook.idea` row and the `seeds/` directory is retired from the wiki vocabulary. See `decisions/seeds-folder.md` for the migration plan.
+
+The `/create-work-request` skill is itself the first seed (`seeds/create-work-request-skill.md`) — dogfooding the surface.
 
 ### Privacy
 
