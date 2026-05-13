@@ -4,7 +4,7 @@ Personal knowledge base for this machine, accessible to AI on demand.
 
 ## TL;DR
 
-`/wiki` reads/searches/adds entries in `~/projects/personal-nix/wiki/`. Markdown files with frontmatter, organized into seven subdirs. Public via personal-nix repo, syncs across Macs. Sensitive content goes to auto-memory instead.
+`/wiki` reads/searches/adds entries in `~/projects/personal-nix/wiki/`. Markdown files with frontmatter, organized into nine subdirs. Public via personal-nix repo, syncs across Macs. Sensitive content goes to auto-memory instead.
 
 ## File layout
 
@@ -21,7 +21,9 @@ Personal knowledge base for this machine, accessible to AI on demand.
 ├── glossary/                                  term → definition
 ├── runbooks/                                  "when X breaks, do Y"
 ├── inbox/                                     uncategorized capture
-└── notes/                                     random saves
+├── notes/                                     random saves
+├── seeds/                                     pre-work-request ideas (interim until PROXY notebook ships)
+└── work-requests/                             tachikoma-ready work items
 ```
 
 ## Invocation reference
@@ -39,7 +41,7 @@ Personal knowledge base for this machine, accessible to AI on demand.
 
 - **On-demand only.** No eager-loaded index in CLAUDE.md. Wiki content is queried via `/wiki`, not pre-loaded into every session.
 - **Public-by-default.** Lives in the public personal-nix repo. Sensitive content goes to the gitignored auto-memory at `~/.claude/projects/.../memory/`. Skill refuses to write secrets.
-- **Fixed subdir vocabulary.** Seven subdirs, no ad-hoc creation. Promote a tag to a subdir if it accumulates 10+ entries; demote a subdir if it's been empty 6+ months.
+- **Fixed subdir vocabulary.** Nine subdirs, no ad-hoc creation. Promote a tag to a subdir if it accumulates 10+ entries; demote a subdir if it's been empty 6+ months. (`seeds/` is interim — it will be retired when PROXY's notebook ships in M6 and its contents migrate to the `notebook.idea` table; see `wiki/decisions/seeds-folder.md`.)
 - **Summarize-and-link for tools.** `tools/<x>.md` is a 5-line stub + link to the canonical doc (e.g., a skill's README). Catalog is for discoverability, not duplication.
 - **Frontmatter is the query primitive.** Common: `title`, `tags`, `last_updated`. Type-specific extras for `tools/`, `glossary/`, `decisions/`. Skill filters by frontmatter before falling back to body grep.
 - **No auto-commit.** Skill writes the file; user commits when convenient. Avoids surprise commits on `personal-nix`.
