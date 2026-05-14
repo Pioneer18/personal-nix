@@ -124,29 +124,82 @@ notify() {
 }
 
 # run_claude <prompt_file> <log_file> [extra_tools]
-# Runs claude -p. Light mode: output to log only. Dev mode: also streams to terminal.
-# Writes output to ITER_TMP. Sets CLAUDE_RC to claude's exit code.
+# Runs claude -p --output-format json. Extracts result text for log (readable).
+# Accumulates token usage to ~/.tachikoma/usage_stats.json for SwiftBar display.
+# ITER_TMP retains full JSON so sentinel detection still works (sentinel is a
+# literal substring of the JSON result field — no escaping needed).
+#
+# API auth routing:
+#   Default — unsets ANTHROPIC_API_KEY so claude -p falls back to personal Max
+#             subscription (claude.ai OAuth). Keeps tachikoma usage off company quota.
+#   Override — set TACHIKOMA_USE_COMPANY_API=1 before launching tachikoma.sh to
+#             force the company API key (e.g. for RelyMD email processing tasks).
 run_claude() {
   local prompt_file="$1"
   local log_file="$2"
   local tools="${3:-$ALLOWED_TOOLS}"
 
-  set +e
-  if [ "$VERBOSE" = "1" ]; then
-    claude -p "$(cat "$prompt_file")" \
-      --allowed-tools "$tools" \
-      --add-dir "$REPO" \
-      --dangerously-skip-permissions \
-      2>&1 | tee -a "$log_file" | tee "$ITER_TMP"
+  if [[ -n "${TACHIKOMA_USE_COMPANY_API:-}" ]]; then
+    CLAUDE_ENV_ARGS=()
   else
-    claude -p "$(cat "$prompt_file")" \
-      --allowed-tools "$tools" \
-      --add-dir "$REPO" \
-      --dangerously-skip-permissions \
-      2>&1 | tee -a "$log_file" > "$ITER_TMP"
+    CLAUDE_ENV_ARGS=(env -u ANTHROPIC_API_KEY)
   fi
-  CLAUDE_RC=${PIPESTATUS[0]}
+
+  set +e
+  "${CLAUDE_ENV_ARGS[@]}" claude -p "$(cat "$prompt_file")" \
+    --output-format json \
+    --allowed-tools "$tools" \
+    --add-dir "$REPO" \
+    --dangerously-skip-permissions \
+    2>> "$log_file" > "$ITER_TMP"
+  CLAUDE_RC=$?
   set -e
+
+  # Extract readable result → log + terminal (verbose); accumulate token counts.
+  # Falls back to raw ITER_TMP content if JSON parsing fails.
+  python3 - "$ITER_TMP" "$log_file" "$HOME/.tachikoma/usage_stats.json" "$VERBOSE" <<'PYEOF' 2>/dev/null \
+    || cat "$ITER_TMP" >> "$log_file"
+import json, sys, os
+from datetime import datetime
+
+iter_file, log_file, stats_file, verbose = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    with open(iter_file) as f:
+        d = json.load(f)
+    result = d.get('result', '')
+    with open(log_file, 'a') as f:
+        f.write(result + '\n')
+    if verbose == '1':
+        print(result, flush=True)
+    usage = d.get('usage') or {}
+    inp = int(usage.get('input_tokens') or 0)
+    out = int(usage.get('output_tokens') or 0)
+    s = {}
+    if os.path.exists(stats_file):
+        try:
+            with open(stats_file) as f: s = json.load(f)
+        except: pass
+    today = datetime.now().strftime('%Y-%m-%d')
+    if s.get('today_date') != today:
+        s.update({'today_date': today, 'today_input': 0, 'today_output': 0, 'today_calls': 0})
+    s['today_input'] = s.get('today_input', 0) + inp
+    s['today_output'] = s.get('today_output', 0) + out
+    s['today_calls'] = s.get('today_calls', 0) + 1
+    s['total_input'] = s.get('total_input', 0) + inp
+    s['total_output'] = s.get('total_output', 0) + out
+    s['total_calls'] = s.get('total_calls', 0) + 1
+    s['last_updated'] = datetime.now().isoformat()
+    os.makedirs(os.path.dirname(stats_file), exist_ok=True)
+    tmp = stats_file + '.tmp'
+    with open(tmp, 'w') as f: json.dump(s, f)
+    os.rename(tmp, stats_file)
+except:
+    try:
+        with open(iter_file) as f: raw = f.read()
+        with open(log_file, 'a') as f: f.write(raw + '\n')
+        if verbose == '1': print(raw, flush=True)
+    except: pass
+PYEOF
 }
 
 trap cleanup EXIT
