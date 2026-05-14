@@ -11,6 +11,8 @@ in {
   imports = [
     ./packages.nix
     ./mcp.nix
+    # Optional modules (uncomment to enable; see modules/README.md):
+    # ./modules/memory-prune.nix   # weekly claude-driven memory auto-curator
   ];
 
   # Symlink personal skills/ entries into ~/.claude/skills/.

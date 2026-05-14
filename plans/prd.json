@@ -21,7 +21,7 @@
       "description": "After this slice ships:\n\n- A nix-managed LaunchAgent fires weekly (default Sunday 03:00 local, configurable).\n- The fired script invokes `claude -p` with a structured prompt that reads `MEMORY.md` + every memory file in `~/.claude/projects/-Users-pioneer/memory/`.\n- Claude emits a markdown report at `~/.claude/projects/-Users-pioneer/memory/.prune-reports/YYYY-MM-DD.md` categorizing each entry as `KEEP` / `CONSOLIDATE` / `ARCHIVE-RECOMMEND` / `ARCHIVE-AUTO` with one-line rationale.\n- `ARCHIVE-AUTO` entries (only those with explicit expiry metadata that has passed) are moved to `~/.claude/projects/-Users-pioneer/memory/.archive/YYYY-MM-DD/` automatically.\n- `ARCHIVE-RECOMMEND` entries surface to the user via macOS notification (\"3 memory entries suggested for archive — review?\") with a deep-link to the report. User reviews + edits MEMORY.md manually (or via a follow-up `proxy memory archive <slug>` CLI in v1.5).\n- A dry-run mode (`--dry-run` flag) writes the report without moving any files.",
       "steps": [],
       "blocked_by": [],
-      "passes": false
+      "passes": true
     }
   ]
 }
