@@ -20,3 +20,4 @@ local.nix
 # Build artifacts (MCP TypeScript packages run from source, not dist)
 node_modules/
 dist/
+.tachikoma/

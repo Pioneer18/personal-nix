@@ -35,7 +35,7 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 | `/tachikoma resume` (optionally `<slug>`) | **Explicit entry point** for recover phase — re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. |
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all tachikoma worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a tachikoma worktree. Picker if >1 running. `--all` halts every running tachikoma in the repo. |
-| `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue with a single worker — full Phases 1–6 per item, batch preferences set once up front. The worker pulls the next `open` item from the shared queue and processes it; when done, pulls the next; repeats until the queue is empty (or until SIGTERM'd via `queue stop`). With `<slug>`: run a single specific queue item. With `--caffeinated` (alias `-C`): prevent macOS sleep for the entire session by wrapping each item's launch with `caffeinate -d`. |
+| `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue with a single worker — full Phases 1–6 per item, batch preferences set once up front. **No `<slug>` (auto-grab, default since proxy-29):** invokes `lib/queue-grab.sh` which wraps `proxy queue grab`. The daemon walks the queue top-down (respecting Epic order, intra-Epic position, `blocked_by`, and `paused` flags) and returns the next ready slice's slug. Tachikoma then proceeds exactly as if the user had typed `/tachikoma queue <slug>`. **With `<slug>`:** manual override — run that specific item, bypassing the grab algorithm. **Empty queue (auto-grab):** print `Nothing to grab. Add an Epic with \`proxy queue add-epic\` or create work-requests.` and exit cleanly. **Fallback:** if `proxy` CLI is missing on PATH (e.g. daemon not yet installed), fall back to the legacy filesystem scan — first `status: open` work-request that passes the readiness check (see Step 1 below). With `--caffeinated` (alias `-C`): prevent macOS sleep for the entire session by wrapping each item's launch with `caffeinate -d`. |
 | `/tachikoma queue <N>` | **Parallel drain — launches N background workers.** Each worker is independent and pulls the next `open` item from the same shared file-based queue. They naturally partition the queue via the atomic `open` → `grabbed` status flip in each work-request's frontmatter. Each worker writes its own state file at `~/.tachikoma/queue-drain.state.<worker-id>` (so `/tachikoma sitrep` can report on all of them). `N` must be an integer ≥ 2; for a single drain use the bare `/tachikoma queue`. `--caffeinated`/`-C` applies to all workers. Batch preferences are collected once in the foreground before any worker is spawned, written to `~/.claude/tachikoma.conf` so background workers read them silently. |
 | `/tachikoma queue <repo>` | Queue-drain mode sourced from GitHub. Fetches all `ready-for-agent AND NOT agent-running` issues from `<repo>` (format: `org/repo`), auto-creates linked work_requests for any without one, then runs the normal queue drain (Phases 1–6 per item). Ends with a HITL notification when no `ready-for-agent` issues remain. Combinable with `<N>` (e.g. `/tachikoma queue MioMarker/healthbite 3`) to drain a GitHub-sourced queue with N parallel workers. |
 | `/tachikoma queue add` | Create a new work-request (delegates to `/work-queue add`). |
@@ -1017,6 +1017,59 @@ Before anything else, scan for interrupted state from a prior session:
 4. On yes (default): handle each interrupted item first using the failure-handling rules in Step 1f before starting any new items. On no: skip interrupted items and start fresh (they remain grabbed — user owns cleanup).
 5. If a grabbed item has no matching worktree (crash before scaffold): reset `status: open` automatically and include it in the normal pre-flight queue.
 
+### Step 0.5 — Slice selection (auto-grab vs. manual override)
+
+This step runs **before** Step 1 pre-flight for the single-worker form (`/tachikoma queue` and `/tachikoma queue <slug>`). It decides which slice(s) feed the rest of the pipeline.
+
+**Three input shapes:**
+
+| Invocation | Behavior |
+|---|---|
+| `/tachikoma queue` (no positional args) | **Auto-grab.** Shell out to `lib/queue-grab.sh` (sibling of `SKILL.md`). The script wraps `proxy queue grab`. Capture stdout. |
+| `/tachikoma queue <slug>` | **Manual override.** Skip auto-grab entirely. The slug becomes the only candidate; Step 1 step 2 filter narrows to it. |
+| `/tachikoma queue <N>` (N ≥ 2) | **Multi-worker drain.** Skip auto-grab in the foreground — each background worker invokes `/tachikoma queue` (no-arg) and runs its own auto-grab. |
+
+**Auto-grab algorithm (no-arg form):**
+
+1. Run `lib/queue-grab.sh`. Capture stdout, stderr, and exit code.
+2. Branch on exit code:
+   - **`0`** — stdout contains the slug (single line, no trailing whitespace). Use it as the implicit `<slug>` argument for the rest of the run. Proceed to Step 1 pre-flight as if the user had typed `/tachikoma queue <slug>`.
+   - **`1`** — queue empty (nothing ready under the daemon's grab rules — every item is `grabbed`, `done`, blocked, paused, or the queue has no items at all). Print:
+     ```
+     Nothing to grab. Add an Epic with `proxy queue add-epic` or create work-requests.
+     ```
+     Exit 0 cleanly. Do not enter pre-flight.
+   - **`2`** — `proxy` CLI not on PATH. Print a single warning line:
+     ```
+     proxy CLI not found — falling back to filesystem queue scan.
+     ```
+     Then enter Step 1 pre-flight with the **legacy filesystem scan**: pick the first work-request whose `status: open` AND `target_repo` exists AND body > 50 chars AND `failure_count < 2` (the readiness check defined above). This preserves the bootstrap path used before proxy-27 shipped.
+   - **`3`** or any other non-zero — `proxy queue grab` failed for a non-empty-queue reason (daemon down, parse error, etc.). Print the captured stderr line and exit non-zero. The user retries after diagnosing.
+3. **Important — only grab `open` slices.** The daemon's `grab` algorithm already filters by `status = open` and skips items whose status is `grabbed`, `done`, or `needs-triage`. The wrapper script does not need to re-filter. After a slice transitions to `done` (or `needs-triage` on failure) at the end of a previous run, the daemon's queue-sync emits `epic_status_transition` / `queue_changed`, and the next `tachikoma queue` invocation picks up the next ready slice automatically.
+
+**Why this matters:** before proxy-29 ships, queue draining is driven by an interactive picker over the filesystem. The picker has no knowledge of Epic order, intra-Epic position, or `blocked_by` constraints. After proxy-29 ships, those constraints are honored deterministically by the daemon, and the picker is replaced by a single subprocess invocation.
+
+**Worked example — Epic A with three open dependency-free slices:**
+
+```
+$ /tachikoma queue
+  → lib/queue-grab.sh → proxy queue grab → "epic-a-1"
+  → Step 1 pre-flight filters to epic-a-1, proceeds to scaffold + launch + ship
+
+$ /tachikoma queue
+  → proxy queue grab → "epic-a-2"   (epic-a-1 is now `done`, daemon skips it)
+
+$ /tachikoma queue
+  → proxy queue grab → "epic-a-3"
+
+$ /tachikoma queue
+  → proxy queue grab → exit 1, empty stdout
+  → printed: "Nothing to grab. Add an Epic with `proxy queue add-epic` or create work-requests."
+  → exit 0
+```
+
+Manual-override form (`/tachikoma queue epic-a-2`) bypasses Step 0.5 entirely — Step 1 step 2 filter narrows directly to `epic-a-2` regardless of Epic order or `blocked_by` state. Useful when re-running a `needs-triage` slice or hand-picking out of order.
+
 ### Step 1 — Pre-flight
 
 **Autonomy rule**: When a preflight blocker has a clear resolution (e.g., uncommitted ADRs that work-requests reference, a stale branch, missing labels), take the recommended action automatically and explain it in one line. Only ask the user when the blocker requires a decision with no obvious default (e.g., merge conflict strategy, ambiguous target branch).
@@ -1040,7 +1093,7 @@ Before anything else, scan for interrupted state from a prior session:
      [3] add-sleep-chart           → ~/projects/healthbite
      [–] wire-up-feature-flags     → ~/projects/platform    ⚠ needs-triage (2 failures)
    ```
-   With `/tachikoma queue <slug>`: filter to that one item. Refuse on no match, ambiguity, or `needs-triage` status (tell user to reset it manually first).
+   With `/tachikoma queue <slug>` (manual override OR auto-grab resolved to a slug in Step 0.5): filter to that one item. Refuse on no match, ambiguity, or `needs-triage` status (tell user to reset it manually first).
 
 3. Resolve batch preferences from `~/.claude/tachikoma.conf` (silent — no prompts). For each of the three values (`quality_bar`, `iteration_cap`, `caffeinated`), use the conf value if present; fall back to the default only if the key is absent. `--caffeinated` / `-C` on the command line overrides conf. Only ask interactively for a value that is missing from both conf and command-line flags. If all three are resolved, skip this step entirely. Record `caffeinated` as `true|false` for use in Step 2f.
 
