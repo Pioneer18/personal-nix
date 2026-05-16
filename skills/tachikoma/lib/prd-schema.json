@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pioneer18.github.io/personal-nix/tachikoma-prd-v1.json",
+  "title": "Tachikoma PRD v1",
+  "description": "Canonical input schema for the tachikoma skill's --prd flag and the future proxy-fast-dispatch-mode (M3) REST endpoint. See wiki/decisions/tachikoma-launch-latency-optimization.md.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "target_repo",
+    "goal",
+    "quality_bar",
+    "stop_condition",
+    "files_in_scope",
+    "files_out_of_scope"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Schema version. v1 = 1. Daemon refuses unknown versions."
+    },
+    "target_repo": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$",
+      "description": "org/repo form. Normalized to local path via per-repo config."
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Goal statement. Multi-line markdown allowed."
+    },
+    "quality_bar": {
+      "enum": ["prototype", "production", "library"]
+    },
+    "stop_condition": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Verifiable stop condition."
+    },
+    "files_in_scope": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1
+    },
+    "files_out_of_scope": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "category", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "category": { "enum": ["functional", "refactor", "test", "docs", "spike"] },
+          "description": { "type": "string", "minLength": 1 },
+          "steps": { "type": "array", "items": { "type": "string" } },
+          "blocked_by": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "pr_target_branch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. Fallback: local repo state check develop -> dev -> main -> master."
+    },
+    "github_issue": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+$",
+      "description": "Optional. Form: org/repo#N."
+    },
+    "epic_slug": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. ADR 006. v1 unvalidated; M3+ validates against Epic table."
+    },
+    "operation_slug": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. ADR 007."
+    },
+    "objective_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. Requires operation_slug."
+    },
+    "iteration_cap": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+    },
+    "iteration_mode": {
+      "enum": ["afk", "once"]
+    },
+    "feedback_loops": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "typecheck": { "type": "string", "minLength": 1 },
+        "test": { "type": "string", "minLength": 1 },
+        "lint": { "type": "string", "minLength": 1 }
+      }
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "planner_model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Optional. REST-only; skill ignores."
+    }
+  }
+}
