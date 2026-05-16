@@ -29,12 +29,33 @@ The backlog is complete when:
 
 This is the only definition of done. Do not improvise alternatives.
 
+## Repo map
+
+This map was generated once at scaffold time. Use it to orient before grepping the codebase from scratch. It is *path/symbol level*, not behavior level — confirm anything load-bearing by reading the actual file.
+
+{{REPO_MAP}}
+
 ## Iteration cycle (5 steps, in order)
 
 ### 1. Read state
 
-- Read `.tachikoma/progress.txt` to understand what previous iterations did.
+- If `.tachikoma/progress.summary.md` exists, read it first — it is a dense summary of all prior iterations (the supervisor regenerates it periodically to combat context rot). Then read **only the last 3 entries** of `.tachikoma/progress.txt` for fresh detail.
+- If `progress.summary.md` does NOT exist, read the full `.tachikoma/progress.txt`.
 - {{TASK_SOURCE_BLOCK}}
+
+### Discovery — when to delegate to a subagent
+
+For *big* discovery passes — full-codebase searches, dependency audits, "find every caller of X across the repo", reading more than ~20 files — use the **Task tool** to spawn a subagent. The subagent runs in its own context window and returns a summary; your main context stays clean and on-task.
+
+Examples worth delegating:
+- "Find every place that imports `legacy/auth.ts`"
+- "Read every file under `apps/web/src/api/` and tell me which ones touch the user table"
+- "Audit `package.json` + every workspace package for `react@17` references"
+
+Examples NOT worth delegating (just do them yourself):
+- Reading a known file
+- A single `grep` or `find` call
+- Looking up the signature of one function
 
 ### 2. Pick the next task
 
@@ -115,6 +136,14 @@ If you decomposed a task or hit a blocker without a sentinel, replace `✓ MILES
 ### Completion check
 
 {{COMPLETION_INSTRUCTIONS}}
+
+## Package managers — match the repo, never invoke from a different ecosystem
+
+Never invoke a package manager (`npm install`, `pnpm install`, `yarn install`, `bundle install`, `cargo install`, etc.) unless the goal or stop condition explicitly requires it. If you must, use the manager declared in the root `package.json`'s `packageManager` field (Node.js repos) or the equivalent for the ecosystem — never a different one.
+
+Stray lockfiles from the wrong manager (e.g. an orphan `pnpm-lock.yaml` in an npm-only repo, or `yarn.lock` in a pnpm workspace) will appear as untracked files at the next iteration start, generate noise warnings, and clutter the diff that lands in the PR. The supervisor's iter-start dirty-tree check tolerates untracked-only state, but the resulting noise is preventable.
+
+If a feedback-loop command requires installing a dependency (you have a missing import / unknown module error), use the repo's declared manager and commit the lockfile change as a separate commit prior to the behavior change.
 
 ## Anti-shortcut framing
 
