@@ -47,6 +47,7 @@ Each worktree is independent; each runs its own loop against the same issue body
 | `/tachikoma` | **Always starts a new task.** Mode (existing-issue / local / remote-greenfield) is chosen via two grill questions in preflight. Creates a new sibling worktree, scaffolds in it, launches loop. Existing completed or interrupted worktrees in the repo are not a blocker — use `/tachikoma done` or `/tachikoma resume` to act on those. |
 | `/tachikoma --remote` | **Fast-path** for remote-greenfield mode — skips the mode-selection grill questions. PRD → `to-prd` → `to-issues` → auto-promoted to `ready-for-agent`. New worktree per run. |
 | `/tachikoma --issue <ref>` | **Fast-path** for existing-issue mode — skips the mode-selection grill questions. Uses a GitHub issue body as the PRD; loop scoped to that single issue. New worktree per run. |
+| `/tachikoma --prd <file> [--yes]` | **Non-interactive entry** — skips the grill entirely. Accepts a pre-baked PRD JSON validated against `lib/prd-schema.json`. Intended for queue-drain workers, parent-claude fan-out, scripted launches. Combinable with `--issue <ref>` (PRD provides scope/items, flag fills `github_issue` + label state machine; mismatch refused). `--yes` skips the confirmation prompt; standalone `--yes` (without `--prd`) is an error. Same input contract the future `proxy-fast-dispatch-mode` REST endpoint will wrap. |
 | `/tachikoma 138` or `/tachikoma #138` | **Shorthand** — a bare integer or `#N` as the first positional arg is normalized to `/tachikoma --issue <N>`. Same fast-path behavior, same preconditions (7, 8). |
 | `/tachikoma done` (optionally `<slug>`) | **Manual fallback for failed auto-ship** — auto-ship runs automatically after AFK completion (see Ship phase below), so this is only needed when that fails or for `--once` mode recovery. With `<slug>`, picks that specific completed worktree; otherwise picker if multiple complete, auto-pick if one. |
 | `/tachikoma resume` (optionally `<slug>`) | **Explicit entry point** for recover phase — re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. |
@@ -233,7 +234,7 @@ Tachikoma reads its defaults from `~/.claude/tachikoma.conf` before every run. C
 | `iteration_cap` | `15` | Integer, max 50 |
 | `iteration_mode` | `afk` | `afk` or `once` |
 | `model` | `sonnet` | Executor model (per-iteration loop). Passed explicitly via `--model` to `claude -p`. ADR 008 P3. |
-| `planner_model` | `opus` | Planner / evaluator / compactor model. Used by PRD synthesis (`to-prd` invocation) and by `lib/progress-summary.sh`. ADR 008 P3. |
+| `planner_model` | `haiku-4.5` | Planner / evaluator / compactor model. Used by PRD synthesis (`to-prd` invocation) and by `lib/progress-summary.sh`. ADR 008 P3. Default changed from `opus` (2026-05-16) — compaction is structured summarization; Haiku handles it well, saves 5-15s per compaction. Override in `~/.claude/tachikoma.conf` if you want Opus quality. |
 | `compaction_interval` | `10` | Regenerate `progress.summary.md` every N iterations via `lib/progress-summary.sh`. `0` disables. ADR 008 P5. |
 | `allowed_tools` | see below | Space-separated tokens for `claude -p --allowed-tools` |
 
@@ -355,6 +356,19 @@ No user input required. plan phase/3 begin immediately.
 
 ## Plan: PRD synthesis (mode-forked)
 
+### Non-interactive mode (`--prd <file>`)
+
+The PRD file **is** the plan. No grill, no `to-prd`/`to-issues` calls, no PRD synthesis.
+
+1. Validate the PRD by piping it through `lib/prd-load.sh <file>`. On any required-field missing, malformed value, or unknown top-level key: refuse with the validator's exact error message and exit 1. **No grill fallback** — explicit failure is the contract.
+2. `idempotency_key` (REST mode only): skill ignores; M3 daemon's REST endpoint enforces same-key-same-blob → existing run, same-key-different-blob → 409.
+3. If `github_issue` is set in the PRD AND `--issue <ref>` is also passed: the two MUST agree. Mismatch → refuse with explicit error.
+4. If `github_issue` is set (from PRD field or `--issue` flag): apply the Claim phase label state machine (see § Claim below).
+5. Materialize the PRD into the scaffold during Scaffold step 5: write the PRD verbatim to `<WORKTREE_PATH>/plans/prd.json`, adding `passes: false` to each `items[]` entry (input schema omits `passes`; execution materialization adds it).
+6. Skip the rest of Plan phase — proceed directly to Scaffold.
+
+**`--yes` semantics**: with `--prd --yes`, the orchestrator skips the standard one-screen pre-scaffold confirmation prompt. `--yes` alone (without `--prd`) is an error. Intended for fully unattended fan-out (parent claude piping PRDs to N children).
+
 ### Local mode (default)
 
 Synthesize `plans/prd.json` directly from grill output. Shape:
@@ -426,6 +440,8 @@ For any run with a linked `github_issue` (from `--issue <N>`, `/tachikoma queue 
 The `agent-running` label is the distributed claim signal. A concurrent Tachikoma filtering `ready-for-agent AND NOT agent-running` will not see this issue after step 1.
 
 ## Scaffold: worktree creation
+
+**Parallel-worktree pattern (local + issue modes)**: the slug, paths, and branch names (steps 1–2 below) are computable from grill output BEFORE Plan-phase PRD synthesis begins. To shave ~1s off launch in interactive modes, the orchestrator runs step 4 (worktree creation) plus the repo-map generation **in parallel with PRD synthesis** — a single Bash invocation issues `git worktree add` and `lib/repo-map.sh` while the orchestrator's PRD-synthesis turn is in flight. Both complete before step 5 (scaffolding inside the worktree). Failure mode: a worktree-creation failure surfaces at step 5, wasting the PRD synthesis — acceptable cost, since collision checks (step 3 / precondition 9) already ran at grill time and other failure modes are rare. `--prd` mode is exempt (no PRD synthesis to overlap against; worktree creation proceeds inline).
 
 1. **Compute slug.** Source depends on mode:
    - Local / Remote-greenfield: derive from grill goal.
