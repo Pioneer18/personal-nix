@@ -16,6 +16,7 @@ Pioneer18's machine wiki. Knowledge that outlives any single Claude session, que
 - `runbooks/` — "when X breaks, do Y"
 - `inbox/` — uncategorized captures (triage later)
 - `notes/` — random saves, tag-categorized
+- `seeds/` — pre-brief ideas; promoted via `/grill-me` → `/brief` (which writes a v2 dossier into PROXY and deletes the seed on promotion). Interim surface until PROXY's notebook ships (M6); see `decisions/seeds-folder.md`.
 - `work-requests/` — work captured for tachikoma to pick up later (alternative to GitHub issues)
 
 ## Invocation
@@ -59,7 +60,8 @@ If `<subdir>` is not in the fixed vocabulary above, refuse and list valid subdir
    - **`tools/`**: also `summary` (required, one line), `category` (required), `link` (optional)
    - **`glossary/`**: also `term` (required, often same as title)
    - **`decisions/`**: also `status` (one of `proposed`/`accepted`/`superseded`, default `accepted`)
-   - **`work-requests/`**: also `target_repo` (required, absolute path or `~`-prefixed — must exist on this machine), `status` (one of `open`/`grabbed`/`done`, default `open`)
+   - **`work-requests/`**: also `target_repo` (required, absolute path or `~`-prefixed — must exist on this machine), `status` (one of `open`/`grabbed`/`done`, default `open`). Optional `promoted_from: <seed-slug>` if the work-request was promoted from a seed.
+   - **`seeds/`**: also `target_repo` (**optional** — some seeds are repo-agnostic; ask but don't require), `status` (always `open` at capture; promotion deletes the file rather than transitioning status)
    - **`recipes/` / `runbooks/` / `notes/` / `inbox/`**: just title, tags, body
 
 3. **Compute slug** from title: lowercase, alphanumeric + dashes, max 40 chars. Filename = `wiki/<subdir>/<slug>.md`.
@@ -100,6 +102,19 @@ When a `decisions/` entry is replaced by a newer one, the user may ask to mark i
 ### Glossary collisions
 
 If a `glossary/` entry already exists for the term, prefer **editing** the existing entry over creating a duplicate. Glossary terms should have exactly one entry.
+
+### Seeds — pre-work-request ideas
+
+`seeds/` entries are the inbox for ideas the user knows they want to act on later but doesn't want to commit to as a full work-request yet (no required `target_repo`, no acceptance criteria, just a captured thought). Lifecycle:
+
+- Capture is intentionally low-friction: `title`, `tags`, body, optional `target_repo`.
+- The user grills a seed via `/grill-me <seed-slug>` to expand it into a PROXY v2 dossier-brief spec.
+- Promotion via `/brief <seed-slug>` writes a transient v2 dossier-brief markdown file, invokes `proxy brief <slug>` to create the `dossiers` row in PROXY's database, and **deletes** the source seed in the same operation. Git history is the audit trail; no archive subdir.
+- Do not maintain a `status: promoted` state — promotion = deletion. If a user changes their mind about a seed, just delete it.
+
+This subdir is **interim** until PROXY's notebook UI ships (v1.5+, M6). At migration, a one-shot importer maps every seed into a `notebook.idea` row and `seeds/` is removed from the vocabulary. See `decisions/seeds-folder.md`.
+
+When the user asks "what ideas do I have?", list `seeds/` entries by `last_updated` desc.
 
 ### Work requests and tachikoma
 
@@ -170,6 +185,7 @@ Pioneer18's personal knowledge base at `~/projects/personal-nix/wiki/`. Syncs ac
 | `runbooks/` | "When X breaks, do Y" |
 | `inbox/` | Uncategorized captures (triage later) |
 | `notes/` | Random saves, tag-categorized |
+| `seeds/` | Pre-brief ideas; promote via `/grill-me` → `/brief` |
 | `work-requests/` | Work items for tachikoma |
 
 ### Example workflow
@@ -179,7 +195,33 @@ Pioneer18's personal knowledge base at `~/projects/personal-nix/wiki/`. Syncs ac
 /wiki recipes auth       — search recipes for "auth"
 /wiki tools tachikoma    — look up the tachikoma tool stub
 /wiki add inbox          — quick capture; triage later
+/wiki add seeds          — capture a pre-work-request idea
+/wiki seeds              — list all pending ideas
 ```
+
+### Seeds workflow (idea → work-request → tachikoma)
+
+`seeds/` is the inbox for ideas you know you want to act on later but aren't ready to commit to as a full work-request. Lower friction than `work-requests/` (no required `target_repo`, no acceptance criteria) — just a captured thought.
+
+The pipeline:
+
+```
+/wiki add seeds                       — capture (title, tags, optional target_repo, body)
+/wiki seeds                           — browse pending ideas
+/wiki seeds <query>                   — search them
+/grill-me wiki/seeds/<slug>.md        — interview to expand into a v2 dossier-brief spec
+/brief <slug>                         — promote: writes /tmp/proxy-brief-<slug>.md, invokes
+                                        `proxy brief <slug>` (creates dossiers row), DELETES the seed
+```
+
+Key properties:
+
+- **Capture is friction-free.** Only `title` + `tags` required. Body and `target_repo` are optional — fill them in later during grilling.
+- **Promotion = deletion.** No `status: promoted` state, no archive subdir. Git history is the audit trail.
+- **Repo-agnostic seeds are fine.** Some ideas don't have an obvious target repo yet; that's the whole point of capturing them before committing to a work-request.
+- **Interim surface.** When PROXY's notebook UI ships (M6 / v1.5+), a one-shot importer maps every seed into a `notebook.idea` row and the `seeds/` directory is retired from the wiki vocabulary. See `decisions/seeds-folder.md` for the migration plan.
+
+Historical note: the original `/create-work-request` skill was the first seed dogfooding this surface. It has since been superseded by `/brief`, which writes a PROXY v2 dossier directly into the daemon rather than a v1 work-request markdown file.
 
 ### Privacy
 

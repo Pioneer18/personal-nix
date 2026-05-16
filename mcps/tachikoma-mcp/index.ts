@@ -259,10 +259,46 @@ function synthesizePrd(wr: WorkRequest): object {
   };
 }
 
-async function tachikomaDispatch(cap: number): Promise<object> {
+async function tachikomaDispatch(
+  cap: number,
+  slug?: string,
+  targetRepoOverride?: string,
+): Promise<object> {
   const requests = readWorkRequests();
-  const next = requests.find(r => r.status === "open" && existsSync(r.targetRepo) && r.bodyLength > 50);
-  if (!next) throw new Error("No open + ready work requests. Check ~/projects/personal-nix/wiki/work-requests/.");
+  let next: WorkRequest | undefined;
+  if (slug) {
+    // Caller specified a slug — pick that work-request specifically. Don't
+    // require status='open' (a 'grabbed' row with no live process is a
+    // common stuck-state and the caller may want to retry).
+    next = requests.find(r => r.slug === slug);
+    if (!next) {
+      throw new Error(
+        `Work-request '${slug}' not found in ~/projects/personal-nix/wiki/work-requests/. ` +
+        `Available slugs: ${requests.map(r => r.slug).slice(0, 10).join(", ")}${requests.length > 10 ? "..." : ""}`,
+      );
+    }
+    if (next.status !== "open") {
+      throw new Error(
+        `Work-request '${slug}' has status '${next.status}'; expected 'open'. ` +
+        `Resolve the prior dispatch (recall / complete / clean up worktree) before re-dispatching.`,
+      );
+    }
+  } else {
+    // No slug — default behavior: pick the highest-priority open + ready.
+    next = requests.find(r => r.status === "open" && existsSync(r.targetRepo) && r.bodyLength > 50);
+    if (!next) throw new Error("No open + ready work requests. Check ~/projects/personal-nix/wiki/work-requests/.");
+  }
+  if (targetRepoOverride) {
+    // Caller-supplied target_repo overrides the work-request's declared
+    // target. Lets the same brief drive different repos.
+    next = { ...next, targetRepo: expandHome(targetRepoOverride) };
+  }
+  if (!existsSync(next.targetRepo)) {
+    throw new Error(`Target repo does not exist on disk: ${next.targetRepo}`);
+  }
+  if (next.bodyLength <= 50) {
+    throw new Error(`Work-request '${next.slug}' body is too small (${next.bodyLength} chars). Expand the spec before dispatching.`);
+  }
 
   const repoName = basename(next.targetRepo);
   const branch = `tachikoma/${next.slug}`;
@@ -357,11 +393,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "tachikoma_dispatch",
-      description: "Grab the next open + ready work-request from ~/projects/personal-nix/wiki/work-requests/, scaffold a tachikoma worktree, and launch the AFK loop. Returns PID, branch, and worktree path.",
+      description: "Scaffold a tachikoma worktree and launch the AFK loop. Defaults to grabbing the next open + ready work-request from ~/projects/personal-nix/wiki/work-requests/; pass `slug` to dispatch a specific work-request instead. Returns PID, branch, and worktree path.",
       inputSchema: {
         type: "object" as const,
         properties: {
           cap: { type: "number", description: "Max AFK iterations (default: 5, max: 50)." },
+          slug: { type: "string", description: "Optional. Specific work-request slug to dispatch (filename stem under wiki/work-requests/, e.g. 'proxy-19-outlook-msgraph-auth'). Without this, picks the highest-priority open + ready request." },
+          target_repo: { type: "string", description: "Optional. Override the target_repo declared in the work-request frontmatter. Absolute path or ~ prefix. Useful for re-running the same brief against a different repo." },
         },
       },
     },
@@ -385,9 +423,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "tachikoma_dispatch") {
     try {
-      const rawCap = (args as Record<string, unknown>)?.cap;
+      const a = (args as Record<string, unknown>) ?? {};
+      const rawCap = a.cap;
       const cap = typeof rawCap === "number" ? Math.min(Math.max(1, rawCap), 50) : 5;
-      const result = await tachikomaDispatch(cap);
+      const slug = typeof a.slug === "string" && a.slug.trim().length > 0 ? a.slug.trim() : undefined;
+      const targetRepo = typeof a.target_repo === "string" && a.target_repo.trim().length > 0 ? a.target_repo.trim() : undefined;
+      const result = await tachikomaDispatch(cap, slug, targetRepo);
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     } catch (e: unknown) {
       return {

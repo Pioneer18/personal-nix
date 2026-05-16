@@ -15,7 +15,8 @@ This INDEX is static. The `/wiki` skill provides search and listing on demand �
 | `runbooks/` | "When X breaks, do Y." Incident-response playbooks. | Recipes — runbooks fire on failure, recipes are setup |
 | `inbox/` | Friction-free staging for captures you haven't categorized yet. | Triage periodically — promote to a real subdir |
 | `notes/` | Random saves, half-formed thoughts, anything not warranting its own subdir yet. Tag-categorized. | Inbox (which is unsorted); notes are kept-as-notes intentionally |
-| `work-requests/` | Work captured for tachikoma to pick up later — alternative to GitHub issues. `status` field tracks `open` / `grabbed` / `done`. | Inbox (unsorted) — work-requests are intentional, tachikoma-targeted |
+| `seeds/` | Pre-brief ideas you know you want to act on later. Promoted via `/grill-me` → `/brief` (writes a v2 dossier into PROXY's daemon and deletes the seed). Interim until PROXY's notebook ships; see `decisions/seeds-folder.md`. | Work-requests (older v1 capture surface, being phased out) and inbox (anything-goes capture) |
+| `work-requests/` | Work captured for tachikoma to pick up later — alternative to GitHub issues. `status` field tracks `open` / `grabbed` / `done`. May carry `promoted_from: <seed-slug>`. | Seeds (which are pre-spec) and inbox (unsorted) |
 
 ## Frontmatter conventions
 
@@ -32,7 +33,8 @@ Subdir-specific extras:
 - **`tools/`**: `summary` (one-liner for catalog listings), `category` (string e.g. "agent-dev", "shell", "nix"), `link` (path or URL to canonical doc)
 - **`glossary/`**: `term` (the word being defined)
 - **`decisions/`**: `status` (`proposed` / `accepted` / `superseded`), optional `supersedes` / `superseded_by` (slug refs)
-- **`work-requests/`**: `target_repo` (required, absolute path of the codebase tachikoma should worktree from), `status` (`open` / `grabbed` / `done`)
+- **`work-requests/`**: `target_repo` (required, absolute path of the codebase tachikoma should worktree from), `status` (`open` / `grabbed` / `done`), optional `promoted_from: <seed-slug>` if promoted from a seed
+- **`seeds/`**: `target_repo` (**optional**, in contrast to work-requests), `status` (always `open` — promotion deletes the file rather than transitioning)
 
 ## Privacy
 
