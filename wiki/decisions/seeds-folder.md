@@ -80,3 +80,11 @@ status: open                                 # always `open`; `promoted` trigger
 - `~/Projects/tachikoma-starter/CLAUDE.md` § Notebook — the v3 design that this subdir is interim for
 - `~/Projects/tachikoma-starter/docs/ARCHITECTURE.md` § 22 (M6) — where notebook ships
 - `wiki/decisions/agentic-shell-4-tier-state.md` — Tier 1 personal-nix is the seeds' home
+
+## Update 2026-05-16 — `/create-work-request` superseded by `/brief`
+
+The promotion target named in the original lifecycle (`/create-work-request` writing a `wiki/work-requests/<slug>.md` file) was never built. PROXY v2 changed the destination shape: dossiers live in the daemon's database, not in markdown files. The promotion skill was therefore reborn as `/brief` (see `~/.claude/skills/brief/SKILL.md`) — it writes a transient v2 dossier-brief markdown to `/tmp/proxy-brief-<slug>.md`, invokes `proxy brief <slug>` to ingest it into the `dossiers` table, then deletes the source seed. Net effect on the lifecycle above:
+
+- Lifecycle step 3: read `/brief` wherever the original says `/create-work-request`. The promotion contract (interview, then delete the seed) is preserved; only the destination changed (DB row instead of markdown file).
+- Schema for the dossier output is documented in `proxy-v2-01-schema-migration.md` and `proxy-v2-08-cli-dossier-verbs.md`.
+- The original `seeds/create-work-request-skill.md` seed has been removed — its content is preserved in git history.

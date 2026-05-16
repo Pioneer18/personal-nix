@@ -15,7 +15,7 @@ This INDEX is static. The `/wiki` skill provides search and listing on demand �
 | `runbooks/` | "When X breaks, do Y." Incident-response playbooks. | Recipes — runbooks fire on failure, recipes are setup |
 | `inbox/` | Friction-free staging for captures you haven't categorized yet. | Triage periodically — promote to a real subdir |
 | `notes/` | Random saves, half-formed thoughts, anything not warranting its own subdir yet. Tag-categorized. | Inbox (which is unsorted); notes are kept-as-notes intentionally |
-| `seeds/` | Pre-work-request ideas you know you want to act on later. Promoted via `/grill-me` → `/create-work-request` (deletes the seed). Interim until PROXY's notebook ships; see `decisions/seeds-folder.md`. | Work-requests (which are sharper, tachikoma-ready) and inbox (which is anything-goes capture) |
+| `seeds/` | Pre-brief ideas you know you want to act on later. Promoted via `/grill-me` → `/brief` (writes a v2 dossier into PROXY's daemon and deletes the seed). Interim until PROXY's notebook ships; see `decisions/seeds-folder.md`. | Work-requests (older v1 capture surface, being phased out) and inbox (anything-goes capture) |
 | `work-requests/` | Work captured for tachikoma to pick up later — alternative to GitHub issues. `status` field tracks `open` / `grabbed` / `done`. May carry `promoted_from: <seed-slug>`. | Seeds (which are pre-spec) and inbox (unsorted) |
 
 ## Frontmatter conventions
