@@ -115,3 +115,13 @@
 - Launched b2dgj026m: timeout 7200 (2-hour) build. workspace-deps not in store (cold build ~30-60 min), but once built, proxy-daemon and proxy-voice should get sccache hits from workspace-deps phase.
 - PR #22 branch updated (3035af9). Live personal-nix updated in place.
 - BLOCKER: b2dgj026m must complete before stop conditions 2-8 can be verified. After it finishes, merge PR #22 and user runs `dev` with sudo.
+
+## Iter 16 — user ran `dev` manually; sccache removed; build active
+- User diagnosed both sccache failure modes first-hand and edited live personal-nix module directly:
+  1. Daemon mode: sccache server (pioneer) can't cd into _nixbldN's drwx------ build dir → "failed to spawn" → fatal
+  2. SCCACHE_NO_DAEMON=1: sccache exits immediately (defunct), cargo hangs forever — no cache response, no error, just blocks
+- User removed sccache entirely from the module with a detailed comment explaining both modes.
+- User is running `dev` (darwin-rebuild switch with sudo) RIGHT NOW as of 12:20 PM. Build confirmed active: rustc compiling tract-data (ONNX dep) at 87% CPU on _nixbld2.
+- Worktree synced to user's no-sccache version (commit c19a5b6). PR #22 branch updated.
+- Stop condition #7 (sccache --show-stats hits) is no longer achievable (sccache removed). All other stop conditions 2-6, 8 should be satisfied once user's `dev` completes successfully.
+- PENDING: user's `dev` build in progress (cold cargo compilation, 30-60 min). Will complete stop conditions 2-6, 8 without further code changes needed.
