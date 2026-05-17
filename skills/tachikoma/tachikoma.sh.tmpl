@@ -8,6 +8,9 @@ set -o pipefail
 REPO="{{REPO_PATH}}"
 SENTINEL='{{SENTINEL}}'
 ALLOWED_TOOLS='{{ALLOWED_TOOLS}}'
+# TACHIKOMA-PROVIDER-BRIDGE: DELETE WHEN /TACHIKOMA QUEUE ROUTES THROUGH PROXY DISPATCH (post proxy-v2-28).
+# Source: ~/.claude/tachikoma.conf `provider = claude|codex`; empty = claude default.
+PROVIDER='{{PROVIDER}}'
 # ADR 008 P3 — explicit model selection per phase (no silent CLI default).
 MODEL='{{MODEL}}'
 PLANNER_MODEL='{{PLANNER_MODEL}}'
@@ -157,6 +160,20 @@ run_claude() {
   # ADR 008 P3 — explicit per-phase model. Caller can pass $4 to override
   # (e.g. ship uses the executor MODEL; planner/evaluator use PLANNER_MODEL).
   local model="${4:-$MODEL}"
+
+  # TACHIKOMA-PROVIDER-BRIDGE: route to codex when PROVIDER=codex. Empty/anything
+  # else falls through to the claude path below. Sunset post proxy-v2-28.
+  if [ "$PROVIDER" = "codex" ]; then
+    local codex_args=(exec "$(cat "$prompt_file")" --sandbox workspace-write)
+    if [ -n "$model" ]; then
+      codex_args=(exec "$(cat "$prompt_file")" --model "$model" --sandbox workspace-write)
+    fi
+    set +e
+    codex "${codex_args[@]}" 2>&1 | tee -a "$log_file" > "$ITER_TMP"
+    CLAUDE_RC=${PIPESTATUS[0]}
+    set -e
+    return $CLAUDE_RC
+  fi
 
   if [[ -n "${TACHIKOMA_USE_COMPANY_API:-}" ]]; then
     CLAUDE_ENV_ARGS=()

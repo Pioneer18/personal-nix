@@ -394,11 +394,13 @@ async function tachikomaDispatch(
   const conf = parseTachikomaConf();
   const model = conf.model ?? "";
   const plannerModel = conf.planner_model ?? "";
+  // TACHIKOMA-PROVIDER-BRIDGE: empty defaults to claude in the bash template.
+  const provider = conf.provider ?? "";
 
   const tachikomaShPath = join(tachikomaDir, "tachikoma.sh");
   writeFileSync(tachikomaShPath, renderTemplate(
     readFileSync(join(TACHIKOMA_SKILLS_DIR, "tachikoma.sh.tmpl"), "utf8"),
-    { REPO_PATH: worktreePath, SENTINEL, ALLOWED_TOOLS: allowedTools, MODEL: model, PLANNER_MODEL: plannerModel }
+    { REPO_PATH: worktreePath, SENTINEL, ALLOWED_TOOLS: allowedTools, MODEL: model, PLANNER_MODEL: plannerModel, PROVIDER: provider }
   ));
   chmodSync(tachikomaShPath, "755");
 
