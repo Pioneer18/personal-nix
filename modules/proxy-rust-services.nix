@@ -66,9 +66,19 @@ let
   sccacheDir = "/private/tmp/nix-sccache";
 
   # Shared env attrs applied to all three crane builds.
+  #
+  # SCCACHE_NO_DAEMON=1: required because the nix daemon builds as _nixbld1
+  # (uid=351, mode 700 on build dirs), while the sccache server started by
+  # the user (pioneer) cannot read _nixbld1's files. Running sccache in
+  # no-daemon mode makes the inline sccache process (as _nixbld1) handle
+  # caching directly — it CAN access both its build dir and SCCACHE_DIR.
+  # Files written to /private/tmp/nix-sccache by _nixbld1 are readable by
+  # subsequent nixbld builds (default umask 022 → 644 files) → cache hits
+  # on the second dev rebuild without the server UID mismatch.
   sccacheEnv = {
     RUSTC_WRAPPER = sccacheBin;
     SCCACHE_DIR = sccacheDir;
+    SCCACHE_NO_DAEMON = "1";
   };
 
   # --- build all workspace deps once -------------------------------------
