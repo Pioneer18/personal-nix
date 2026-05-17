@@ -17,8 +17,9 @@ This recipe is the prerequisite for `proxy outlook connect` (CLI) and the Settin
 
 - **Tenant ID** — RelyMD's directory GUID. Same value every developer sees.
 - **Application (client) ID** — GUID identifying the PROXY app in the tenant.
-- **Client secret value** — string starting with random chars; **shown exactly once** at creation. Treat it like a PAT.
 - **Redirect URI** — fixed: `http://localhost:3000/api/integrations/outlook/callback`.
+
+> Slice 19 ships an **OAuth 2.0 code + PKCE** flow (RFC 7636). The app is registered as a **public client** with `code_challenge_method=S256`, so there is **no client secret to generate, store, or rotate** — the PKCE verifier on each consent attempt is the ephemeral substitute. If your previous notes mentioned a `client_secret`, ignore them: PROXY no longer asks for one.
 
 ## Steps
 
@@ -42,8 +43,8 @@ Click **Register**.
 
 You're dropped on the app's **Overview** page. Copy now:
 
-- **Application (client) ID** → `OUTLOOK_CLIENT_ID`
-- **Directory (tenant) ID** → `OUTLOOK_TENANT_ID`
+- **Application (client) ID** → `MS_CLIENT_ID`
+- **Directory (tenant) ID** → `MS_TENANT_ID`
 
 ### 3. Configure the redirect URI's response mode
 
@@ -53,7 +54,7 @@ Under **Web → Redirect URIs**, confirm `http://localhost:3000/api/integrations
 
 Under **Implicit grant and hybrid flows**, leave both boxes **unchecked** (PROXY uses the authorization code flow, not implicit).
 
-Under **Advanced settings → Allow public client flows**, leave **No**. We're a confidential web client; the callback runs server-side in Next.js and the `client_secret` never leaves the daemon/web tier.
+Under **Advanced settings → Allow public client flows**, set to **Yes**. Slice 19 uses the public-client / PKCE flow — no client secret, the PKCE `code_verifier` on each consent attempt is what proves possession of the code.
 
 **Save**.
 
@@ -82,19 +83,11 @@ This step is what makes the consent screen during `proxy outlook connect` a sing
 
 If the button is greyed out, you're signed in with an account that isn't Global Admin or Application Admin in the RelyMD tenant. Switch accounts.
 
-### 6. Create a client secret
+### 6. (No client secret — PKCE replaces it)
 
-Side nav → **Certificates & secrets** → **Client secrets** tab → **+ New client secret**.
+Skip this step. PROXY's public-client + PKCE flow does not use a `client_secret`; the **Certificates & secrets** blade stays empty. RFC 7636's `code_verifier` ↔ `code_challenge` round-trip is what proves the daemon owns the authorization code, so there is no long-lived secret to rotate or revoke.
 
-- **Description:** `proxy-daemon (dev machine — <your-username>)`
-- **Expires:** **180 days** for active dev machines (forces rotation, surfaces stale secrets fast). 24-month max if you really need to.
-
-Click **Add**. The new row appears with two columns of interest:
-
-- **Value** — the secret string. **Copy this NOW** — Microsoft hides it forever after you leave the page. This becomes `OUTLOOK_CLIENT_SECRET`.
-- **Secret ID** — a separate GUID. Not used by PROXY; ignore.
-
-If you lose the value, delete the row and create a new secret. There's no "show again" path.
+If your tenant policy requires every app registration to have *some* credential, you can add a certificate instead of a secret — but slice 19 will not use it.
 
 ### 7. (Optional) Pin a single user for testing
 
@@ -104,27 +97,25 @@ Skip this for production-style usage where any user in the tenant should be able
 
 ### 8. Wire the values into PROXY config
 
-Three values land in two places.
+Two values land in two places. There is no `client_secret` (see step 6).
 
-**`~/.config/proxy/proxy.toml`** (machine-wide config; per ADR 004):
+**`.env`** in the tachikoma-starter checkout (gitignored; mirrored from `.env.example`). Both the Rust daemon and the Next.js app read these via `process.env` / `std::env::var`:
+
+```dotenv
+# Outlook / MS Graph OAuth — values from the Entra app you registered above.
+MS_TENANT_ID=<paste tenant_id GUID>
+MS_CLIENT_ID=<paste application/client_id GUID>
+MS_OAUTH_REDIRECT_URI=http://localhost:3000/api/integrations/outlook/callback
+```
+
+**`~/.config/proxy/proxy.toml`** (machine-wide config; per ADR 004) — optional, useful when running the daemon as a LaunchAgent where `.env` isn't loaded. The parser tolerates the section being absent, so existing PROXY installs don't need this block until they want Outlook connected.
 
 ```toml
 [email.outlook]
-tenant_id   = "<paste tenant_id GUID>"
-client_id   = "<paste application/client_id GUID>"
+tenant_id    = "<paste tenant_id GUID>"
+client_id    = "<paste application/client_id GUID>"
 redirect_uri = "http://localhost:3000/api/integrations/outlook/callback"
 ```
-
-**`.env`** in the tachikoma-starter checkout (gitignored; mirrored from `.env.example`):
-
-```bash
-OUTLOOK_TENANT_ID=<paste tenant_id GUID>
-OUTLOOK_CLIENT_ID=<paste application/client_id GUID>
-OUTLOOK_CLIENT_SECRET=<paste client_secret value>
-OUTLOOK_OAUTH_REDIRECT_URI=http://localhost:3000/api/integrations/outlook/callback
-```
-
-The `tenant_id` + `client_id` + `redirect_uri` triple is non-secret and lives in `proxy.toml` so the Rust daemon can read it without the web app's env. The `client_secret` is secret and only the Next.js callback handler needs it, so it lives in `.env` (loaded into `process.env`).
 
 ### 9. Verify
 
@@ -136,21 +127,18 @@ Sanity-check the token round-trip with `proxy outlook test` — it should print 
 
 ## Rotation
 
-Client secrets created in step 6 expire on the date you picked. Calendar two events:
+There is no client secret to rotate (see step 6). The only long-lived credential PROXY holds is each user's **refresh token**, which Microsoft issues a fresh 90-day window for on every successful refresh.
 
-- **T-14 days** — generate a new secret in **Certificates & secrets**, update `.env`, restart the web app, run `proxy outlook test` to confirm.
-- **T-0 (expiry day)** — delete the old secret row in the Entra portal.
-
-Refresh tokens have their own 90-day inactivity window. PROXY auto-refreshes the access token every ~50 minutes (10-minute safety buffer ahead of the 1h TTL), which also refreshes the refresh token's sliding window. If you don't touch the mailbox for 90 days straight, the refresh token expires; the daemon will detect this on the next call, mark the account inactive, and the Settings page will surface a "Reconnect" button.
+Refresh-token rotation is automatic: PROXY refreshes the access token ~60 s before its 1 h TTL elapses, which also slides the refresh-token window forward. If a mailbox sits untouched for 90 days, the refresh token expires; on the next call the daemon receives `invalid_grant`, flips `outlook_accounts.active` to FALSE, and the Settings page surfaces a **Reconnect** button. Clicking it re-enters the consent flow and lands a fresh token pair on the same row.
 
 ## Revocation
 
 If a machine is lost or a developer offboards:
 
-1. Entra portal → **App registrations → PROXY — Outlook (…) → Certificates & secrets** → delete the relevant client-secret row.
-2. The user's refresh token can also be revoked individually via Graph: `POST /me/revokeSignInSessions` while authenticated as that user, or admin-side via **Users → <user> → Authentication methods → Revoke sessions**.
+1. Entra portal → **App registrations → PROXY — Outlook (…) → Branding & properties** → **Delete** the entire registration if it was created per-machine. Tenant-wide registrations stay; revoke the user's tokens instead (step 2).
+2. The user's refresh token can be revoked via Graph: `POST /me/revokeSignInSessions` while authenticated as that user, or admin-side via **Users → <user> → Authentication methods → Revoke sessions**.
 
-PROXY's local `proxy outlook disconnect` (Settings → Integrations) hits the Microsoft `/oauth2/v2.0/logout` endpoint for the local refresh token and clears the Keychain entry, but does **not** delete the Entra app registration. The app registration is per-tenant infrastructure and outlives any individual machine's credentials.
+PROXY's local `proxy outlook disconnect` (Settings → Integrations) hits the Microsoft `/oauth2/v2.0/logout` endpoint for the local refresh token and sets `outlook_accounts.active = FALSE`, but does **not** delete the Entra app registration. The app registration is per-tenant infrastructure and outlives any individual machine's credentials.
 
 ## Cross-references
 
