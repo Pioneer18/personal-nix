@@ -37,7 +37,9 @@ let
   # proxy-voice needs cmake (whisper.cpp via whisper-rs) and CoreAudio (cpal).
   # proxy-daemon is pure Rust (rustls TLS — no libpq needed) but shares
   # cargoArtifacts with voice, so native deps apply to the common dep build.
-  nativeBuildInputs = with pkgs; [ cmake pkg-config ];
+  # bindgenHook: whisper-rs-sys uses bindgen to generate C bindings for
+  # whisper.cpp; this hook sets LIBCLANG_PATH so bindgen finds libclang.
+  nativeBuildInputs = with pkgs; [ cmake pkg-config rustPlatform.bindgenHook ];
   buildInputs = with pkgs.darwin.apple_sdk.frameworks; [
     CoreAudio
     AudioToolbox
