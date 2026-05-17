@@ -47,25 +47,28 @@ let
   # `$SDKROOT/System/Library/Frameworks/` at compile time.
   buildInputs = [ pkgs.apple-sdk ];
 
-  # sccache wrapper — sandbox is false so sccache can reach the host server
-  # (pioneer@localhost:4226) during nix builds.
   sccacheBin = "${pkgs.sccache}/bin/sccache";
 
-  # Explicit SCCACHE_DIR pointing at /private/tmp/nix-sccache.
+  # /private/tmp/nix-sccache: writable sccache dir for the nix build user.
   #
   # Why not the default (~/.cache/sccache): nix builds run with
   # HOME=/homeless-shelter (read-only). The cc crate auto-wraps C compilation
-  # through sccache (when RUSTC_WRAPPER=sccache) and writes preprocessor temp
-  # files to SCCACHE_DIR. /private/tmp is world-writable (mode 1777) so the
-  # nixbld user can create the dir if absent; the actual Rust compilation cache
-  # is held by the sccache server (pioneer@localhost:4226), which is unaffected
-  # by which nixbld UID runs the build.
+  # through sccache (RUSTC_WRAPPER=sccache) and needs a writable SCCACHE_DIR
+  # for preprocessor temp files. /private/tmp is 1777 (world-writable), so the
+  # nixbld user can create the dir there if it doesn't exist yet.
   sccacheDir = "/private/tmp/nix-sccache";
 
   # Shared env attrs applied to all three crane builds.
+  #
+  # SCCACHE_NO_DAEMON=1: the sccache server runs as pioneer (the login user),
+  # but nix build directories are drwx------ owned by the _nixbld builder.
+  # Pioneer cannot cd into them, so the server cannot spawn rustc/cc → fatal
+  # "failed to spawn" error. Inline mode (SCCACHE_NO_DAEMON=1) runs sccache as
+  # the nixbld builder, which owns its own build dir and can compile normally.
   sccacheEnv = {
     RUSTC_WRAPPER = sccacheBin;
     SCCACHE_DIR = sccacheDir;
+    SCCACHE_NO_DAEMON = "1";
   };
 
   # --- build all workspace deps once -------------------------------------
