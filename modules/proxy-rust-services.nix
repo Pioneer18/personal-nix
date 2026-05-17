@@ -1,17 +1,18 @@
 # modules/proxy-rust-services.nix
 #
 # Builds proxy-daemon, proxy CLI, and proxy-voice from the cargo workspace at
-# ~/Projects/tachikoma-starter/ using crane + sccache, and manages
-# com.proxy.daemon / com.proxy.voice as LaunchAgents via home-manager's
-# launchd.agents.*. MacBook-Pro-2 only (workspace path is hardcoded).
+# ~/Projects/tachikoma-starter/ using crane (no sccache — see comment below
+# the buildInputs for why), and manages com.proxy.daemon / com.proxy.voice
+# as LaunchAgents via home-manager's launchd.agents.*. MacBook-Pro-2 only
+# (workspace path is hardcoded).
 #
 # crane is fetched inline via pkgs.fetchFromGitHub at the rev pinned in
 # flake.lock (github:ipetkov/crane/v0.20.2 → 60202a2e…). The flake input
 # entry in flake.nix serves as the canonical version record.
 #
 # First rebuild: cold cargo build of the full workspace takes 5-30 min.
-# Subsequent rebuilds reuse Nix-store-cached cargoArtifacts + sccache hits,
-# typically finishing in seconds.
+# Subsequent rebuilds reuse Nix-store-cached cargoArtifacts (input-hashed
+# at the store level), typically finishing in seconds.
 { config, pkgs, lib, ... }:
 
 let
@@ -47,56 +48,48 @@ let
   # `$SDKROOT/System/Library/Frameworks/` at compile time.
   buildInputs = [ pkgs.apple-sdk ];
 
-  sccacheBin = "${pkgs.sccache}/bin/sccache";
-
-  # /private/tmp/nix-sccache: writable sccache dir for the nix build user.
+  # sccache is intentionally NOT wired into the crane derivations. Two
+  # failure modes proven during initial bring-up (2026-05-17):
   #
-  # Why not the default (~/.cache/sccache): nix builds run with
-  # HOME=/homeless-shelter (read-only). The cc crate auto-wraps C compilation
-  # through sccache (RUSTC_WRAPPER=sccache) and needs a writable SCCACHE_DIR
-  # for preprocessor temp files. /private/tmp is 1777 (world-writable), so the
-  # nixbld user can create the dir there if it doesn't exist yet.
-  sccacheDir = "/private/tmp/nix-sccache";
-
-  # Shared env attrs applied to all three crane builds.
+  # 1. Default daemon mode: cc-rs auto-spawns sccache, which tries to talk
+  #    to a server running as `pioneer`. The server can't cd into _nixbldN's
+  #    drwx------ build dir → "failed to spawn" → build fails fast.
+  # 2. SCCACHE_NO_DAEMON=1 inline mode: cc-rs spawns sccache, sccache
+  #    exits immediately (defunct), and cargo blocks forever waiting for a
+  #    response that won't come. The build never errors, just hangs.
   #
-  # SCCACHE_NO_DAEMON=1: the sccache server runs as pioneer (the login user),
-  # but nix build directories are drwx------ owned by the _nixbld builder.
-  # Pioneer cannot cd into them, so the server cannot spawn rustc/cc → fatal
-  # "failed to spawn" error. Inline mode (SCCACHE_NO_DAEMON=1) runs sccache as
-  # the nixbld builder, which owns its own build dir and can compile normally.
-  sccacheEnv = {
-    RUSTC_WRAPPER = sccacheBin;
-    SCCACHE_DIR = sccacheDir;
-    SCCACHE_NO_DAEMON = "1";
-  };
+  # Both modes died despite SCCACHE_DIR=/private/tmp/nix-sccache (mode 1777).
+  # Inside nix, sccache adds zero value anyway — cargoArtifacts is
+  # content-addressed at the store level, so input-equivalent rebuilds are
+  # already O(0). For outside-nix host builds where caching matters, set
+  # RUSTC_WRAPPER in your shell or direnv profile.
 
   # --- build all workspace deps once -------------------------------------
   # Nix caches this derivation by input hash; changing only app code
   # (daemon/src/*.rs) does NOT invalidate cargoArtifacts → rebuild is fast.
-  cargoArtifacts = craneLib.buildDepsOnly ({
+  cargoArtifacts = craneLib.buildDepsOnly {
     src = workspaceSrc;
     pname = "proxy-workspace";
     version = "0.1.0";
     inherit nativeBuildInputs buildInputs;
-  } // sccacheEnv);
+  };
 
   # --- per-binary packages -----------------------------------------------
-  proxy-daemon-pkg = craneLib.buildPackage ({
+  proxy-daemon-pkg = craneLib.buildPackage {
     src = workspaceSrc;
     pname = "proxy-daemon";
     version = "0.1.0";
     inherit cargoArtifacts nativeBuildInputs buildInputs;
     cargoExtraArgs = "--bin proxy-daemon";
-  } // sccacheEnv);
+  };
 
-  proxy-voice-pkg = craneLib.buildPackage ({
+  proxy-voice-pkg = craneLib.buildPackage {
     src = workspaceSrc;
     pname = "proxy-voice";
     version = "0.1.0";
     inherit cargoArtifacts nativeBuildInputs buildInputs;
     cargoExtraArgs = "--bin proxy-voice";
-  } // sccacheEnv);
+  };
 
   # proxy CLI is proxy-daemon under a friendlier name (symlink, as in
   # the hand-install: ~/.local/bin/proxy → proxy-daemon).
