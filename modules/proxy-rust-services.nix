@@ -47,38 +47,25 @@ let
   # `$SDKROOT/System/Library/Frameworks/` at compile time.
   buildInputs = [ pkgs.apple-sdk ];
 
-  # sccache wrapper — sandbox is false on this machine so sccache can reach
-  # ~/Library/Caches/sccache/ during the nix build.
+  # sccache wrapper — sandbox is false so sccache can reach the host server
+  # (pioneer@localhost:4226) during nix builds.
   sccacheBin = "${pkgs.sccache}/bin/sccache";
 
-  # Explicit sccache cache dir pointing at /private/tmp/nix-sccache.
+  # Explicit SCCACHE_DIR pointing at /private/tmp/nix-sccache.
   #
-  # Why not ~/Library/Caches: the nix build daemon spawns builders under a
-  # different UID (or with restricted credentials) that cannot write to the
-  # user's ~/Library/Caches even with sandbox=false (Permission denied).
-  #
-  # Why /private/tmp/nix-sccache (mode 1777): world-writable + sticky bit,
-  # so any builder UID can create the preprocessor subdirectory needed by
-  # sccache's C-compilation wrapping (cc crate auto-wraps CC through sccache
-  # when RUSTC_WRAPPER=sccache is detected). The sccache server (running as
-  # pioneer on localhost:4226) handles actual cache persistence in its own
-  # home-dir cache — SCCACHE_DIR is only the preprocessor temp area.
+  # Why not the default (~/.cache/sccache): nix builds run with
+  # HOME=/homeless-shelter (read-only). The cc crate auto-wraps C compilation
+  # through sccache (when RUSTC_WRAPPER=sccache) and writes preprocessor temp
+  # files to SCCACHE_DIR. /private/tmp is world-writable (mode 1777) so the
+  # nixbld user can create the dir if absent; the actual Rust compilation cache
+  # is held by the sccache server (pioneer@localhost:4226), which is unaffected
+  # by which nixbld UID runs the build.
   sccacheDir = "/private/tmp/nix-sccache";
 
   # Shared env attrs applied to all three crane builds.
-  #
-  # SCCACHE_NO_DAEMON=1: required because the nix daemon builds as _nixbld1
-  # (uid=351, mode 700 on build dirs), while the sccache server started by
-  # the user (pioneer) cannot read _nixbld1's files. Running sccache in
-  # no-daemon mode makes the inline sccache process (as _nixbld1) handle
-  # caching directly — it CAN access both its build dir and SCCACHE_DIR.
-  # Files written to /private/tmp/nix-sccache by _nixbld1 are readable by
-  # subsequent nixbld builds (default umask 022 → 644 files) → cache hits
-  # on the second dev rebuild without the server UID mismatch.
   sccacheEnv = {
     RUSTC_WRAPPER = sccacheBin;
     SCCACHE_DIR = sccacheDir;
-    SCCACHE_NO_DAEMON = "1";
   };
 
   # --- build all workspace deps once -------------------------------------
