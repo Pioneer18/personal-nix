@@ -51,29 +51,47 @@ let
   # ~/Library/Caches/sccache/ during the nix build.
   sccacheBin = "${pkgs.sccache}/bin/sccache";
 
+  # Explicit sccache cache directory. Required because: the cc crate (used by
+  # ring, whisper-rs-sys, etc.) automatically wraps C compilation through
+  # sccache when RUSTC_WRAPPER=sccache is set. sccache then tries to create
+  # its preprocessor cache dir under $HOME/Library/Caches/Mozilla.sccache/,
+  # but the nix build environment sets HOME=/homeless-shelter (read-only).
+  # Setting SCCACHE_DIR explicitly bypasses the homeless-shelter lookup and
+  # points sccache at the real writable cache on the host filesystem.
+  sccacheDir = "${homeDir}/Library/Caches/sccache";
+
+  # Shared env attrs applied to all three crane builds.
+  sccacheEnv = {
+    RUSTC_WRAPPER = sccacheBin;
+    SCCACHE_DIR = sccacheDir;
+  };
+
   # --- build all workspace deps once -------------------------------------
   # Nix caches this derivation by input hash; changing only app code
   # (daemon/src/*.rs) does NOT invalidate cargoArtifacts → rebuild is fast.
-  cargoArtifacts = craneLib.buildDepsOnly {
+  cargoArtifacts = craneLib.buildDepsOnly ({
     src = workspaceSrc;
+    pname = "proxy-workspace";
+    version = "0.1.0";
     inherit nativeBuildInputs buildInputs;
-    RUSTC_WRAPPER = sccacheBin;
-  };
+  } // sccacheEnv);
 
   # --- per-binary packages -----------------------------------------------
-  proxy-daemon-pkg = craneLib.buildPackage {
+  proxy-daemon-pkg = craneLib.buildPackage ({
     src = workspaceSrc;
+    pname = "proxy-daemon";
+    version = "0.1.0";
     inherit cargoArtifacts nativeBuildInputs buildInputs;
     cargoExtraArgs = "--bin proxy-daemon";
-    RUSTC_WRAPPER = sccacheBin;
-  };
+  } // sccacheEnv);
 
-  proxy-voice-pkg = craneLib.buildPackage {
+  proxy-voice-pkg = craneLib.buildPackage ({
     src = workspaceSrc;
+    pname = "proxy-voice";
+    version = "0.1.0";
     inherit cargoArtifacts nativeBuildInputs buildInputs;
     cargoExtraArgs = "--bin proxy-voice";
-    RUSTC_WRAPPER = sccacheBin;
-  };
+  } // sccacheEnv);
 
   # proxy CLI is proxy-daemon under a friendlier name (symlink, as in
   # the hand-install: ~/.local/bin/proxy → proxy-daemon).
