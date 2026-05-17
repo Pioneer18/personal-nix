@@ -40,12 +40,12 @@ let
   # bindgenHook: whisper-rs-sys uses bindgen to generate C bindings for
   # whisper.cpp; this hook sets LIBCLANG_PATH so bindgen finds libclang.
   nativeBuildInputs = with pkgs; [ cmake pkg-config rustPlatform.bindgenHook ];
-  buildInputs = with pkgs.darwin.apple_sdk.frameworks; [
-    CoreAudio
-    AudioToolbox
-    CoreFoundation
-    Security
-  ];
+  # Modern nixpkgs Darwin framework pattern (post-apple_sdk_11_0 removal —
+  # see https://nixos.org/manual/nixpkgs/stable/#sec-darwin-legacy-frameworks).
+  # `pkgs.apple-sdk` exposes the default SDK frameworks transparently; the
+  # Rust crates pick up CoreAudio/AudioToolbox/CoreFoundation/Security from
+  # `$SDKROOT/System/Library/Frameworks/` at compile time.
+  buildInputs = [ pkgs.apple-sdk ];
 
   # sccache wrapper — sandbox is false on this machine so sccache can reach
   # ~/Library/Caches/sccache/ during the nix build.
