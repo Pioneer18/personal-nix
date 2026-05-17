@@ -76,6 +76,17 @@
         echo "personal-nix: tachikoma-mcp dir not found, skipping"
       fi
 
+      # Shortcuts — wraps macOS Shortcuts.app. Exposes `list` + `run` tools.
+      # See: mcps/shortcuts/README.md. v3 agentic-shell slice shell-10.
+      SHORTCUTS_MCP_DIR="$HOME/projects/personal-nix/mcps/shortcuts"
+      if [ -d "$SHORTCUTS_MCP_DIR" ]; then
+        (cd "$SHORTCUTS_MCP_DIR" && npm install --quiet 2>/dev/null) || true
+        register_mcp shortcuts -- \
+          node --experimental-strip-types "$SHORTCUTS_MCP_DIR/index.ts"
+      else
+        echo "personal-nix: shortcuts-mcp dir not found, skipping"
+      fi
+
       # Postgres — official server. Connection string is a placeholder;
       # update if you want a real default DB. Per-project DBs are usually
       # better handled with a project-scoped MCP entry instead.

@@ -4,7 +4,7 @@ Defines the art slots used throughout the tachikoma skill. Each slot has a fixed
 
 ## Art files
 
-Located at `~/Desktop/bmo faces/set/` during development; copied into the skill at implementation time.
+Located at `~/projects/personal-nix/assets/bmo-faces/set/` during development; copied into the skill at implementation time.
 
 | File | Dimensions | Used in |
 |---|---|---|

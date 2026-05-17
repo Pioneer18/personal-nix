@@ -1,5 +1,5 @@
 ---
-status: open
+status: done
 target_repo: ~/Projects/tachikoma-starter
 github_issue: ""
 failure_count: 0

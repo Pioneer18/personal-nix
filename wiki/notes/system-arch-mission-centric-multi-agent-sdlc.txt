@@ -1,0 +1,50 @@
+﻿System Architecture Specification: The Mission-Centric Multi-Agent SDLC
+1. Executive Overview: From Task Execution to Human-Centered Supervision
+The primary bottleneck in modern software engineering has shifted from a deficit of raw intelligence to a crisis of human attention. While frontier Large Language Models (LLMs) can now conceptualize and execute complex features, human engineers remain the rate-limiting factor. Even elite developers can only drive a few tasks forward simultaneously because every commit and architectural decision requires their active, synchronous supervision. To scale development bandwidth beyond these human-limited constraints, this architecture mandates a transition from short-lived agent "sessions" to long-running, autonomous  Missions .A  Mission  is defined as an autonomous ecosystem of agents operating over extended durations—historically proven up to 16 days with a theoretical capacity for 30-day cycles—to achieve high-level architectural goals. Rather than requiring constant human intervention, a mission allows a supervisor to define a goal and approve a strategic plan, leaving the system to manage the complexities of implementation, error recovery, and verification.Primary Architectural Goals:
+* Codebase Integrity:  Ensuring autonomous changes adhere to defined architectural standards without introducing technical debt.
+* Adversarial Validation:  Implementing independent verification cycles to eliminate implementation bias.
+* Asynchronous Supervision:  Enabling human leads to manage 30+ workstreams simultaneously via high-level oversight rather than micro-management.This architecture is underpinned by the strategic synthesis of Delegation, Creator-Verifier, Broadcast, and Negotiation multi-agent frameworks.
+2. Theoretical Foundation: The Multi-Agent Taxonomy
+A standardized taxonomy is required to resolve the current industry fragmentation of conflicting terminologies. This specification establishes five frontier frameworks as the building blocks for autonomous engineering:
+* Delegation:  A hierarchical structure where a parent agent spawns a sub-agent for a scoped task (e.g., researching a database schema) and consumes the result.
+* Creator-Verifier:  A mandatory separation of concerns where the agent implementing the code is distinct from the agent reviewing it, eliminating the "cost bias" of the implementer.
+* Direct Communication:  Peer-to-peer interaction without a central coordinator. While flexible, it is excluded from the core Mission workflow to prevent state fragmentation and the loss of a single source of truth.
+* Negotiation:  Interaction over shared resources or conflicting decisions. In this architecture, negotiation facilitates net-positive sum trading at milestone boundaries to reconcile handoff summaries.
+* Broadcast:  A one-to-many communication model used to distribute status updates and new shared constraints across the ecosystem to maintain coherence.The Mission system integrates  Delegation  for task distribution,  Creator-Verifier  for quality control,  Broadcast  for system-wide state synchronization, and  Negotiation  at milestone boundaries to rescope work based on QA failures.
+3. Functional Role Architecture: Orchestrators, Workers, and Validators
+To prevent state fragmentation and maximize cognitive performance, the system utilizes a three-role architecture. Each role is constrained to its optimal functional domain.
+The Orchestrator
+The Orchestrator shall function as the strategic "sounding board" and primary interface for the human supervisor. Its duty is to resolve requirements by asking strategic questions and probing the problem space. The Orchestrator does not execute code; it produces the mission blueprint, comprising the plan, milestones, and the  Validation Contract .
+The Worker
+Workers are responsible for implementation. This role mandates the principle of "clean context" to mitigate the degraded attention that occurs as context windows accumulate irrelevant data. A Worker is assigned a single feature with a clean slate, reads the spec, implements the feature, and commits via  git . This ensures the subsequent Worker inherits a clean, functional codebase without inherited baggage.
+The Validator
+Validators shall be adversarial by design. Their role is to verify implementation independently of the implementation process. By maintaining strict separation from the Worker, the Validator ensures the system meets the high-level goals defined in the planning phase, rather than merely confirming that the written code "looks correct."These roles interact exclusively through the mechanism of the Validation Contract, which serves as the connective tissue for the entire mission.
+4. The Validation Framework: Contracts and Adversarial Testing
+Traditional testing written post-implementation fails in autonomous systems because it tends to "confirm decisions" rather than "catch bugs." If an implementation is flawed, the tests often mirror those flaws.The  Validation Contract  is an architectural requirement established during the planning phase, before implementation begins. It consists of hundreds of assertions mapped to specific features. Every feature is assigned one or more assertions, and the sum of all features must cover the entire contract.
+Validator Specification
+Validator Type,Focus Areas,Methodology
+Scrutiny Validator,"Code quality, syntax, logic.","Executes test suites, type checks, lints, and spawns dedicated code review agents for every feature."
+User Testing Validator,"End-to-end behavior, functional flow.","Interacts with live applications via ""computer use"" to verify rendering, form submission, and holistic flows."
+The User Testing Validator is the most time-intensive phase, accounting for the majority of the mission's "wall clock time." Data from production missions (e.g., a Slack clone build) shows that validation almost never succeeds on the first attempt, necessitating a QA loop where the system creates follow-up features to address failures. In these builds, 60% of the time is spent on implementation, resulting in 50% of the final lines of code (LOC) being tests with 90% coverage.
+5. Operational Logic: Serial Execution and Structured Handoffs
+In long-running autonomous tasks, there is a fundamental tension between throughput and codebase integrity. Naive parallelism leads to coordination overhead, architectural inconsistency, and merge conflicts that negate speed gains.
+The Serial Execution Mandate
+This architecture mandates  Serial Execution  for all implementation and validation tasks within a mission. Only one Worker or Validator may be active at any point. To maintain efficiency, the system utilizes  targeted internal parallelization  only for read-only tasks, such as codebase indexing, API research, or parallel code reviews. This approach ensures that correctness compounds over the mission's duration.
+Structured Handoffs and Self-Healing
+Context retention is maintained through  Structured Handoffs . Upon task completion, an agent must document:
+1. Completed Work:  Features successfully implemented and committed to git.
+2. Undone Tasks:  Items remaining in the active scope.
+3. Command Logs:  A full record of terminal interactions.
+4. Exit Codes:  Results of all executed commands.
+5. Discovered Issues:  Unforeseen architectural hurdles or bugs.
+6. Procedural Compliance:  Verification against the Orchestrator’s defined skills.This handoff data enables  Self-Healing . At milestone boundaries, the Orchestrator analyzes these reports to catch issues, rescope corrective work, and pull the mission back on track through corrective features rather than relying on agent memory.
+6. Model Orchestration: The "Droid Whispering" Strategy
+The architecture is strictly model-agnostic, leveraging the "structural advantage" of different LLM strengths. "Droid Whispering" is the architectural skill of mentally modeling how different models interact and predicting where failures will compound over multi-day runs.Role-Based Model Assignment:
+* Orchestrator:  High-reasoning models capable of strategic questioning.
+* Worker:  Models optimized for fast code fluency and creative implementation.
+* Validator:  Models optimized for precise instruction following.The Bitter Lesson & Prompt-Driven Logic:  To avoid obsolescence, the orchestration logic is not hard-coded. Following the "Bitter Lesson," the system’s behavior—including feature decomposition and failure handling—is defined in approximately  700 lines of prompts and skills  (e.g., agents.md). Deterministic logic is kept thin, focused solely on "bookkeeping" (running validation and managing handoffs), while the agents provide the intelligence. This ensures the system improves automatically as frontier models evolve.
+7. Human-in-the-Loop: Mission Control and Supervision
+Standard chat interfaces are insufficient for multi-day missions. This architecture requires a  Mission Control  interface designed for asynchronous oversight.Key Supervisory Metrics:
+* Project Completion Percentage:  High-level progress tracking against the plan.
+* Budget Burn Rates:  Real-time monitoring of token and operational costs.
+* Active Worker Summaries:  Granular visibility into the current agent's task and handoff data.This architectural shift fundamentally alters team economics. By moving from a team of five engineers managing 10 workstreams to managing 30+, humans are freed to focus on high-level architecture and product strategy.Architects must stop building single-agent tools and start engineering agent ecosystems that provide the discipline, adversarial validation, and connective tissue required for true SDLC autonomy.

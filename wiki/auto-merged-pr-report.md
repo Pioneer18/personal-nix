@@ -104,3 +104,90 @@ _(none)_
 - **Fix needed:** for self-authored PRs, skip the `--approve` call. Post the rubric summary as a regular PR comment, then squash-merge. Other-authored PRs continue to use approve+merge.
 
 ---
+
+# 2026-05-12T02:50Z — MioMarker/tachikoma-starter
+
+**Mode:** autonomous-only  •  **Duration:** 00:01  •  **Base:** develop
+
+## Merged (0)
+_(none)_
+
+## Walkthrough queue at exit (1)
+- #5 [tier-2: logic without tests] — feat: scaffold PROXY monorepo with Turborepo + Docker Compose
+  - Self-authored, 1620 additions, 0 deletions, 15 files, CLEAN mergeable
+  - Logic files lacking tests: `Dockerfile.web`, `apps/web/next.config.ts`, `apps/web/next-env.d.ts`, `turbo.json`, `docker-compose.yml`
+  - Path carve-out fails (Dockerfile / docker-compose / turbo not in `src/types/**`, `src/data/**`, `src/constants/**`, or `*.config.*`)
+  - Size carve-out fails (total diff 1620 lines > 100)
+  - Recommended next: scaffold PRs are typically fine without tests — override as good-enough in a future walkthrough run, or skip the rubric for scaffold PRs by adding `apps/web/next.config.ts`-style infra paths to the path carve-out
+
+## Out-of-scope (12)
+PRs #6–#17 + #18–#21 form a stacked-PR chain targeting each other's feature branches, not `develop`. They'll roll forward as the head of the stack lands.
+⚠️ Per recipe ARCHITECTURE.md § 10, some of these are **obsoleted by v2** and should be closed rather than landed:
+- #8 (loop execution engine) — host-spawned, replaced by containerized model
+- #14 (BullMQ scheduler) — replaced by Postgres LISTEN/NOTIFY
+- #18 (notifications via osascript) — replaced
+
+## Pending CI at exit (0)
+_(none — repo has no CI configured)_
+
+---
+
+# 2026-05-12T04:48:23Z — MioMarker/healthbite
+
+**Mode:** full  •  **Duration:** ~00:35  •  **Base:** dev
+
+## Merged (0 in pass 1; 5 during walkthrough — see below)
+_(no pass-1 auto-merges; all 9 PRs entered walkthrough)_
+
+## Walkthrough actions taken (10)
+- #130 [tier-1: empty diff] — Fix meal_nutrient RLS error after account switch → posted close-comment, closed PR, deleted branch (content already in `dev` via another path)
+- #131 [tier-2 → clean after test] — Farmer carry: time-based two-input test → drafted 11 Jest tests for BW·s percentile calc in `src/utils/__tests__/fitnessCalculations.test.ts`, pushed, approved, squash-merged, deleted branch
+- #132 [tier-2: logic without tests] — Fix silent bloodwork upload failures → initially skipped; closed at end (superseded by #133 — content is in `dev`)
+- #133 [tier-2 → clean after refactor + test] — Bloodwork telemetry + Documents routing widget → extracted `detectBloodWork` into `supabase/functions/process-document/detection.ts`, added 10 Deno tests in `detection.test.ts`, pushed, approved, squash-merged, deleted branch
+- #134 [tier-2: logic without tests] — Meal logging cache + confirm-and-go → closed in favor of #142 (superset)
+- #136 [tier-2: logic without tests] — Move meal-analysis orchestration server-side → closed in favor of #142 (superset)
+- #142 [tier-2: walkthrough override (good-enough)] — Photo meal logging auto-submit + server orchestration → approved with explicit override comment (no tests — risk accepted; supersets #134 + #136), squash-merged, deleted branch
+- #145 [tier-2 → good-enough after partial test] — Auth overhaul (magic link + Apple SIWA + Settings) → drafted 6 Jest tests for `auth-method-hint.ts` (auth-provider SIWA flow remains uncovered; Apple Dev Portal + Supabase Dashboard ops act as the activation gate), pushed, approved, squash-merged, deleted branch
+- #149 [tier-2 → clean after test] — Per-user RHR baseline → exported `computeRhrPersonalBaseline`, drafted 7 Jest tests in `src/utils/__tests__/healthMetrics.test.ts` covering threshold/IQR/per-day reduction/window cutoff/filtering/rounding, pushed, approved, squash-merged, deleted branch
+
+## Walkthrough queue at exit (0)
+_(none — full queue handled)_
+
+## Pending CI at exit (0)
+_(none — repo has no CI configured for these branches)_
+
+## Notes
+- 5 merged (#131, #133, #142, #145, #149); 3 closed as superseded (#130, #134, #136); 1 closed at end as already-in-dev (#132).
+- The meal-orchestration stack (#134 ⊂ #136 ⊂ #142) collapsed to a single merge (#142) per user direction. The bloodwork pair (#132 ⊂ #133) collapsed to a single merge (#133).
+- 4 new test files created (fitnessCalculations — Jest, detection — Deno, auth-method-hint — Jest, healthMetrics — Jest), 1 supporting refactor (extracted detection.ts), 1 source `export` keyword added (computeRhrPersonalBaseline). **34 new tests, all passing.**
+- All 9 starting PRs cleared from `dev`; 0 still labeled `auto-merge-blocked`.
+
+---
+
+# 2026-05-12T07:07Z — MioMarker/tachikoma-starter
+
+**Mode:** full (scoped to #24, #23, #19, #21 per user request)  •  **Duration:** ~01:00
+
+## Merged (1)
+- #23 [clean — self-authored] — feat: TTS reply for Hey/Open voice modes (shell-09); merged into `feat/proxy-14-notebook` (stacked-PR base, not `dev`)
+
+## Walkthrough actions taken (3)
+- #19 [tier-1: conflicts] — feat: Ink TUI control hub → pulled `feat/proxy-14-notebook`, resolved README.md keep-both, committed merge, pushed (`1ae5cc9..f664d68`). PR should re-evaluate mergeable shortly.
+- #21 [tier-1: conflicts] — feat: filesystem → PROXY DB queue migration → same README.md resolution as #19, committed + pushed (`72553e1..8b5e84b`).
+- #24 [tier-1: conflicts after #23 merge] — Hey PROXY voice mode → 8-file conflict (Cargo.lock, Cargo.toml, voice/Cargo.toml, voice/install.sh, voice/src/{lib,main}.rs, proxy.toml.example, voice/README.md); resolved as union/combine; committed + pushed (`629d12f..ec46230`). **User must run `cargo build --workspace` to validate before merging the PR.**
+
+## Walkthrough queue at exit (0)
+_All four scoped PRs reached an action this session._
+
+## Pending CI at exit (0)
+_(repo has no CI configured)_
+
+## Notes
+- All four PRs target `feat/proxy-14-notebook` (a stacked feature branch), not `dev`. Skill normally only operates on `$BASE_BRANCH` (resolved to `dev`) — user explicitly scoped to these PRs, so the rubric was applied to their actual base.
+- Pre-flight: cwd not under `/Users/pioneer/Projects/platform`; `gh auth ok`; base resolved to `dev`; `auto-merge-blocked` label exists; report path writable.
+- Overlap-group rule for #23 + #24: smaller (#23) auto-merged in pass 1; #24 became CONFLICTING after #23's merge brought shared files into the base — dropped to tier-1 walkthrough as expected.
+- The PR #21 stack relationship: #21 is a superset of #19. If user wants to land both, #19 should be merged into the base first, then #21 rebased on the new base. Otherwise close #19 in favor of #21.
+- #24 merge included a substantial hand-merged voice/README.md (combining Hey + TTS docs; base's README explicitly said "will be merged with shell-05's notes when both land"). Worth a polish pass.
+- No `[auto-review-prs]` comments existed prior on any of the four PRs; one `[auto-review-prs]` comment posted on #23 (self-merge rubric).
+
+---
