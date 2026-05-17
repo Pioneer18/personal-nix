@@ -51,14 +51,19 @@ let
   # ~/Library/Caches/sccache/ during the nix build.
   sccacheBin = "${pkgs.sccache}/bin/sccache";
 
-  # Explicit sccache cache directory. Required because: the cc crate (used by
-  # ring, whisper-rs-sys, etc.) automatically wraps C compilation through
-  # sccache when RUSTC_WRAPPER=sccache is set. sccache then tries to create
-  # its preprocessor cache dir under $HOME/Library/Caches/Mozilla.sccache/,
-  # but the nix build environment sets HOME=/homeless-shelter (read-only).
-  # Setting SCCACHE_DIR explicitly bypasses the homeless-shelter lookup and
-  # points sccache at the real writable cache on the host filesystem.
-  sccacheDir = "${homeDir}/Library/Caches/sccache";
+  # Explicit sccache cache dir pointing at /private/tmp/nix-sccache.
+  #
+  # Why not ~/Library/Caches: the nix build daemon spawns builders under a
+  # different UID (or with restricted credentials) that cannot write to the
+  # user's ~/Library/Caches even with sandbox=false (Permission denied).
+  #
+  # Why /private/tmp/nix-sccache (mode 1777): world-writable + sticky bit,
+  # so any builder UID can create the preprocessor subdirectory needed by
+  # sccache's C-compilation wrapping (cc crate auto-wraps CC through sccache
+  # when RUSTC_WRAPPER=sccache is detected). The sccache server (running as
+  # pioneer on localhost:4226) handles actual cache persistence in its own
+  # home-dir cache — SCCACHE_DIR is only the preprocessor temp area.
+  sccacheDir = "/private/tmp/nix-sccache";
 
   # Shared env attrs applied to all three crane builds.
   sccacheEnv = {
