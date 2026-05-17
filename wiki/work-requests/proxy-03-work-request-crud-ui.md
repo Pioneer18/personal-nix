@@ -21,7 +21,7 @@ User can create, view, list, and update work requests in the browser. PROXY's fa
 - `apps/web/src/app/**`
 - `apps/web/src/components/**`
 - `apps/web/public/**`
-- BMO ASCII art source files at `~/Desktop/bmo faces/set/` (copy the -small.txt variants into the repo as static assets)
+- BMO ASCII art source files at `~/projects/personal-nix/assets/bmo-faces/set/` (copy the -small.txt variants into the repo as static assets)
 
 ## Files out of scope
 

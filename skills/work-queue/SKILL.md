@@ -1,20 +1,20 @@
 ---
 name: work-queue
-description: Manage the personal work-request queue via the PROXY API (http://localhost:3000/api/work-requests). Create and list work items; execution is handled by `/tachikoma queue`. Triggers — `/work-queue`, `/work-queue list`, `/work-queue add`, `/work-queue add <target-repo>`, `/work-queue done <slug>`, or any natural-language request like "what's queued?", "add a work request", "create a work request", "list my queue", "mark this work request done".
+description: Manage the personal work-request queue via the PROXY API (http://localhost:3737/api/work-requests). Create and list work items; execution is handled by `/tachikoma queue`. Triggers — `/work-queue`, `/work-queue list`, `/work-queue add`, `/work-queue add <target-repo>`, `/work-queue done <slug>`, or any natural-language request like "what's queued?", "add a work request", "create a work request", "list my queue", "mark this work request done".
 ---
 
 # Work Queue
 
-Thin manager for the PROXY work-request queue at `http://localhost:3000/api/work-requests`. Adds new items and tracks lifecycle (`open` → `grabbed` → `done`, with `needs-triage` as a quarantine state for repeatedly-failing items). Execution — running items and draining the queue — is handled entirely by `/tachikoma queue`.
+Thin manager for the PROXY work-request queue at `http://localhost:3737/api/work-requests`. Adds new items and tracks lifecycle (`open` → `grabbed` → `done`, with `needs-triage` as a quarantine state for repeatedly-failing items). Execution — running items and draining the queue — is handled entirely by `/tachikoma queue`.
 
 The queue used to live in `~/projects/personal-nix/wiki/work-requests/*.md`. Those files have been migrated into the PROXY DB (slice 17) and archived under `wiki/work-requests/archived/`. **Do not read or write the markdown files** — they are historical.
 
 ## Prerequisite
 
-PROXY must be running. If `curl -fsS http://localhost:3000/api/work-requests?limit=1` fails (connection refused or non-2xx), refuse with:
+PROXY must be running. If `curl -fsS http://localhost:3737/api/work-requests?limit=1` fails (connection refused or non-2xx), refuse with:
 
 ```
-✗ PROXY API unreachable at http://localhost:3000
+✗ PROXY API unreachable at http://localhost:3737
   → Start PROXY: cd ~/Projects/tachikoma-starter && docker compose up
 ```
 
@@ -46,6 +46,7 @@ Each work_request is a row in the PROXY `work_requests` table. Fields written an
 | `status` | `open` \| `grabbed` \| `done` \| `needs-triage` | server (state machine via `/api/runs/*`) | Lifecycle state. See state machine below. |
 | `targetRepo` | path string (may use `~`) | this skill (`add`) | Where tachikoma runs. Validated for existence on `list` and `add`. |
 | `githubIssue` | string `org/repo#N` or `null` | this skill (`add`), `/tachikoma` (auto-create) | Links to a GitHub issue. Null = not linked. |
+| `githubPr` | string (PR URL) or `null` | `proxy queue link` CLI, tachikoma ship phase Step 6 | Links to a GitHub PR. When non-null, PROXY's pr_sync poller flips `status` to `done` automatically when the PR merges or closes. Null = manual lifecycle (no auto-done). |
 | `config.failure_count` | integer (≥ 0) | `/tachikoma queue` only | Cumulative failure count. Read-only here. |
 | `createdAt` / `updatedAt` | ISO timestamp | DB | Bumped on every update. |
 
@@ -56,6 +57,39 @@ Each work_request is a row in the PROXY `work_requests` table. Fields written an
 The `done` command in this skill is a **soft delete** (`DELETE /api/work-requests/[id]`) — it removes the item from the queue view. Status text is preserved on the row but the item won't appear in `list`.
 
 `needs-triage` is a terminal-until-manual-reset state. This skill refuses to mark-done a `needs-triage` item — the human must inspect failures in the PROXY UI and either re-open the row (via PROXY's UI / PATCH) or accept the soft-delete by issuing `/work-queue done <slug>` after acknowledging the quarantine in the UI.
+
+## PR linking and auto-done
+
+A `work_requests` row can carry an optional `github_pr` link. When set, PROXY's pr_sync poller (in the daemon) ticks every ~5 minutes, fetches each linked PR's state via `gh pr view --json state,mergedAt,closedAt`, and flips the row's `status` to `done` automatically on `MERGED` or `CLOSED`. The flip emits a `system_recommendations` row of kind `work_request_auto_closed` for audit.
+
+**Rows without `github_pr` retain today's manual lifecycle** — they stay `open`/`grabbed` until a human runs `/work-queue done <slug>` or the row reaches `needs-triage` via repeated `/tachikoma queue` failures. The poller never touches unlinked rows.
+
+### Populating `github_pr`
+
+Two paths:
+
+1. **Tachikoma ship phase (automatic).** When `/tachikoma` or `/tachikoma queue` ships a work-request, ship phase Step 6 calls `proxy queue link <slug> <pr-url>` immediately after `gh pr create`. Tachikoma-driven rows get the link populated for free; the poller picks them up on its next tick after merge.
+
+2. **`proxy queue link` CLI (manual / externally-created PRs).** For PRs opened outside the tachikoma flow (dev team picked up an `open` row, you cherry-picked the work yourself, etc.), run on the daemon host:
+
+   ```
+   proxy queue link <slug> <pr-ref> [--force]
+   ```
+
+   `<pr-ref>` accepts both forms:
+   - Full URL: `https://github.com/org/repo/pull/N` (with trailing slash / `/files` / `?query` / `#anchor` tolerated)
+   - Shorthand: `org/repo#N`
+
+   The CLI:
+   - Looks up the row by slug (exact match — substring matching is reserved for the `done` flow).
+   - Refuses if `status ∈ {done, needs-triage}` unless `--force` is passed. The guard exists because linking a PR to an already-`done` row is almost always a mistake; `--force` is the explicit acknowledgement.
+   - PATCHes `github_pr` to the canonical URL form (`https://github.com/<owner>/<repo>/pull/<N>`), normalising both input shapes.
+   - Prints the canonical URL on stdout on success.
+   - Last-write-wins on relink: if the row already has a `github_pr`, the new value overwrites it. (v1 supports one PR per row — multiple PRs per work-request is out of scope; see `~/projects/personal-nix/wiki/work-requests/proxy-work-request-pr-link.md`.)
+
+**Race with manual `/work-queue done`.** If you `done` a linked row before the poller catches the merge, no conflict — the poller's UPDATE has `WHERE status NOT IN ('done', 'needs-triage')` so the soft-deleted row stays soft-deleted.
+
+**Closed-without-merge.** A PR that closes without merging (abandoned, superseded) still flips the row to `done`. If you want it back, re-open via the PROXY UI or PATCH.
 
 ## add flow
 
@@ -130,7 +164,7 @@ Render the body content using the same section structure as the old work-request
 Then call:
 
 ```
-POST http://localhost:3000/api/work-requests
+POST http://localhost:3737/api/work-requests
 Content-Type: application/json
 
 {
@@ -161,7 +195,7 @@ Run `/tachikoma queue <slug>` to run it now, or `/work-queue list` to see the qu
 ## list flow
 
 1. Preflight: verify PROXY is reachable.
-2. `GET http://localhost:3000/api/work-requests?limit=100&offset=0`. If `total > limit`, paginate by bumping `offset` until `items.length + offset >= total`. Concatenate `items`.
+2. `GET http://localhost:3737/api/work-requests?limit=100&offset=0`. If `total > limit`, paginate by bumping `offset` until `items.length + offset >= total`. Concatenate `items`.
 3. Filter `items` client-side: keep `status` ∈ `{open, grabbed, needs-triage}`. Hide `done` (the row is soft-deleted from the queue view; in case any leak through, drop them).
 4. For each item, validate readiness:
    - `targetRepo` field present (always true — server validates)
@@ -195,16 +229,16 @@ Completed (or hand-finished) work-requests are soft-deleted in PROXY. The row is
 1. Preflight: verify PROXY is reachable.
 2. Resolve slug: `GET /api/work-requests?limit=100` (paginate if needed). Substring-match user-provided `<slug>` against the `slug` field of each item. Refuse on no-match or ambiguity.
 3. Read the matched item's `status`. Route:
-   - `needs-triage` — **refuse**. Fetch full row (`GET /api/work-requests/<id>`) to read `config.failure_count`. Print: *"`<slug>` is `needs-triage` (failure_count: N). Inspect the failure log in the PROXY UI at http://localhost:3000, then either reset it from the UI or confirm by running `/work-queue done <slug> --force` (TODO: not implemented in this slice). Don't auto-delete — needs-triage exists precisely to force human review."*
+   - `needs-triage` — **refuse**. Fetch full row (`GET /api/work-requests/<id>`) to read `config.failure_count`. Print: *"`<slug>` is `needs-triage` (failure_count: N). Inspect the failure log in the PROXY UI at http://localhost:3737, then either reset it from the UI or confirm by running `/work-queue done <slug> --force` (TODO: not implemented in this slice). Don't auto-delete — needs-triage exists precisely to force human review."*
    - `open` or `grabbed` — proceed.
-4. Soft-delete: `DELETE http://localhost:3000/api/work-requests/<id>`.
+4. Soft-delete: `DELETE http://localhost:3737/api/work-requests/<id>`.
 5. Confirm: `<slug> deleted. (was <previous status>)`
 
 ## Failure modes
 
 Error format: `✗ <what went wrong>\n  → <exact next step>`
 
-- **PROXY API unreachable** — `✗ PROXY API unreachable at http://localhost:3000\n  → Start PROXY: cd ~/Projects/tachikoma-starter && docker compose up`
+- **PROXY API unreachable** — `✗ PROXY API unreachable at http://localhost:3737\n  → Start PROXY: cd ~/Projects/tachikoma-starter && docker compose up`
 - **API returns 5xx** — `✗ PROXY returned <status>: <body>\n  → Check PROXY logs (docker compose logs web) and retry.`
 - **`targetRepo` path doesn't exist on disk** — mark as `NOT READY: targetRepo <path> not found` in `list`; refuse to `add`.
 - **Slug already exists (add)** — `✗ slug "<slug>" already in use.\n  → Choose a different slug, or edit the existing work_request in the PROXY UI.`
@@ -225,7 +259,7 @@ PROXY runs locally; the DB is on your laptop. But work_requests can be linked to
 
 ## Work Queue — User Guide
 
-Manages a personal queue of work items in the PROXY DB (http://localhost:3000). This skill handles queue state; execution is handled by `/tachikoma queue`.
+Manages a personal queue of work items in the PROXY DB (http://localhost:3737). This skill handles queue state; execution is handled by `/tachikoma queue`.
 
 ### Commands
 
@@ -245,12 +279,18 @@ open → grabbed → done
 
 Items that fail twice in a queue drain are quarantined as `needs-triage`. Inspect them in the PROXY UI and re-open from there to re-queue. To discard a `needs-triage` item entirely, run `/work-queue done <slug>` only after reviewing the failure log.
 
+**Auto-done via linked PR.** If a row has `github_pr` set (populated automatically by tachikoma ship phase, or manually via `proxy queue link <slug> <pr-ref>`), PROXY's pr_sync poller flips it to `done` when the PR merges or closes — no manual `/work-queue done` needed. Rows without `github_pr` keep today's manual lifecycle. See the "PR linking and auto-done" section above for details.
+
 ### Example workflow
 
 ```
-1. /work-queue add ~/projects/platform    — capture a task (guided)
-2. /tachikoma queue <slug>               — run it (or /tachikoma queue to drain all)
-3. /work-queue done <slug>              — called automatically on success; run manually if needed
+1. /work-queue add ~/projects/platform           — capture a task (guided)
+2. /tachikoma queue <slug>                       — run it (or /tachikoma queue to drain all)
+3a. Tachikoma-driven: ship phase links the PR;
+    the pr_sync poller marks it done on merge.    — fully automatic
+3b. Externally-driven: proxy queue link <slug> <pr-url>
+    once the PR exists; poller takes over.       — one CLI call, then automatic
+3c. Local/no-PR runs: /work-queue done <slug>    — only when no PR was opened
 ```
 
 ### Queue drain

@@ -1,0 +1,162 @@
+Surescripts E-Prescribing Use Case Questionnaire — RelyMD submission
+Submitted by: Jonathan Sells, 2026-05-12
+
+============================================================
+SECTION 1 — Use Case Questionnaire
+============================================================
+
+Security ID: S-00235
+Name: Jonathan Sells
+Email Address: jonathan.sells@relymd.com
+
+End user(s) who will access, exchange, or use Surescripts data:
+  - Pharmacy
+  - Provider
+
+HIPAA definition(s) the use-case meets:
+  - Treatment
+
+What is the purpose and specific intended use case(s) for accessing, exchanging, or using Surescripts data?
+
+RelyMD is a telehealth platform where licensed providers (MD, DO, NP, PA) see patients in virtual visits. We are integrating DoseSpot into our provider application so that, during or right after a visit, the rendering provider can electronically send a prescription to the patient's pharmacy. DoseSpot is our certified intermediary to Surescripts — RelyMD does not connect to Surescripts directly.
+
+All Surescripts data accessed through DoseSpot is used solely for treatment of an established RelyMD patient by the credentialed RelyMD provider who conducted that patient's visit. Specifically, we use it to:
+
+1. Sync patient demographics (name, DOB, gender, address, mobile phone, height, weight) into DoseSpot so a prescription can be tied to the correct patient.
+2. Exchange allergies and the patient's self-reported medication list to support safe-prescribing checks.
+3. Search the drug catalog so the provider can pick the correct medication, strength, form, and dispense unit.
+4. Look up the patient's pharmacy (retail or mail-order) from the Surescripts pharmacy directory.
+5. Transmit new prescriptions through Surescripts to the chosen pharmacy for dispensing.
+6. Read back the resulting prescription record so it appears on the patient's chart for continuity of care.
+
+Scope of this integration: new prescriptions only (no refill requests, RxRenewal, or RxChange), and non-controlled substances only (EPCS / controlled substances are explicitly disabled at medication selection). Prescribing is limited to the licensed provider who conducted the visit, in states where that provider holds an active license.
+
+============================================================
+SECTION 2 — Electronic Prescribing
+============================================================
+
+Do you plan to send electronic prescriptions to all pharmacies on the Surescripts network, or just a select few?
+  All pharmacies
+
+How many new prescriptions do you estimate sending via the Surescripts network per month?
+  3,000
+
+Do you work with insurance or is your platform cash-pay only?
+  Insurance
+
+What is the platform you are supporting? (select all that apply)
+  - SaaS
+  - Mobile
+  - Client Server
+
+Your Application Name and Version:
+  RelyMD Insight 2026.19.0
+
+The entities (Providers) registered and supported by my system to send/receive transactions via the Surescripts network will be registered with their respective credentialing authority and be operating on the Surescripts network under their declared names (e.g., NPPES, NCPDP, DEA, and/or State License).
+  Yes
+
+Do you plan to support Electronic Prescribing for Controlled Substances (EPCS)?
+  No
+
+For customers prescribing non-controlled substances, do you have an existing Identity Proofing procedure in place that at a minimum meets NIST Identity Assurance Level 2 (IAL 2)?
+  Yes
+
+============================================================
+SECTION 3 — Supporting Notes (internal)
+============================================================
+
+Application name rationale:
+  Customer-facing product name is "RelyMD Insight". Internal monorepo folder is `apps/insight-2` (Next.js rewrite of the original `apps/insight`). Version 2026.19.0 is the synced CalVer across `@relymd/insight-2` and `@relymd/api`.
+
+Credentialing (supports the "Yes" on entity-registration attestation):
+  - NPI verified via Modio against NPPES at onboarding (Type 1 / Individual).
+  - DEA verified two ways: provider-supplied DEA certificate copy + Modio electronic primary-source verification.
+  - State license verified two ways: provider-supplied license copy + Modio electronic PSV; documents stored in Modio document session.
+  - OIG/SAM exclusion checks: Modio runs at onboarding and monthly thereafter.
+  - Re-credentialing cycle: every 3 years from onboarding date.
+  - Sequencing: Jonathan completes credentialing before passing the provider to Dany / Alyssa for DoseSpot registration.
+  - SOP: Confluence → "RelyMD Internal Wiki" → "Credentialing How To Guide" (Scribe-captured).
+
+IAL2 caveat:
+  IAL2 also expects identity binding (government photo-ID review or remote video verification at intake). Confirm Modio's onboarding workflow includes a driver's license / passport check before attesting.
+
+EPCS (supports the "No"):
+  Integration explicitly rejects any DoseSpot drug with `Schedule > 0` at the `/medications/select` step. Out of scope for this certification.
+
+Reference PRs (DoseSpot integration slices):
+  - relymd/platform #914 — feat/dosespot-api-slice-1 — DoseSpot API client + search/select
+  - relymd/platform #915 — feat/dosespot-api-slice-2 — Prescription Draft CRUD + Form Modal
+  - relymd/platform #935 — feat/dosespot-api-slice-3 — Send DoseSpot prescriptions
+  - relymd/platform #936 — feat/dosespot-api-slice-4 — Prescription favorites
+
+============================================================
+SECTION 4 — Workflow Attachment (uploaded with this form)
+============================================================
+
+File: ~/Documents/RelyMD/downloads/RelyMD__Surescripts_Data_Workflow_Attachment-Final-v4.pdf
+Source HTML: /tmp/surescripts-v3.html (regenerate with Chrome --headless --print-to-pdf)
+
+v4 correction applied vs v3 (2026-05-14):
+
+§2.5 Surescripts Service Scope — RewrItten from "Out-of-Scope Surescripts
+Services" to a three-tier scope statement. The original v2/v3 understated
+the integration by claiming RxChange, RxRenewal, and refill-request
+workflows were out-of-scope. They are in fact in-scope, surfaced inside
+RelyMD via the embedded DoseSpot SSO drawer:
+
+  In scope (RelyMD native UI):       NewRx
+  In scope (DoseSpot SSO drawer):    RxRenewal, RxChange, RxCancel,
+                                     transaction error + pending-Rx
+                                     monitoring (counts from
+                                     /api/notifications/counts)
+  Out of scope:                      RxFill, medication history,
+                                     eligibility & formulary, prior
+                                     authorization, EPCS
+
+Evidence:
+  - packages/actions/src/queries/dosespot/GetProviderDosespotSummary.ts
+    reads RefillRequestsCount, PendingRxChangeCount,
+    TransactionErrorsCount, PendingPrescriptionsCount.
+  - apps/insight/src/client/common/Header.tsx:128-131 sums those into the
+    provider notification badge.
+  - apps/insight-2/src/features/clinical/visits/modals/VisitEPrescribeDrawer.tsx
+    embeds the DoseSpot SSO iframe with new-tab escape; this is the
+    response surface for refill / RxChange / RxCancel.
+  - RxFill: zero hits across slice branches; user confirmed out-of-scope.
+
+v3 corrections applied vs v2 (verified against feat/dosespot-api-slice-4 on 2026-05-14):
+
+1. Auth stack truth — RelyMD does NOT use Auth0 as the primary IdP.
+   - Primary: RelyMD-operated OIDC server using the oidc-provider library
+     at apps/api/src/oidc.ts. All platform sessions are brokered here.
+   - Auth0 is one of several federated identity strategies; activated only
+     when a client's auth_strategies array includes 'auth0' (see
+     apps/api/src/actions/VerifyCredentials.ts:131). Used today by select
+     enterprise clients.
+   - MFA: universal at the IdP login interaction (email factor); not
+     role-conditional. See apps/api/src/client/components/mfa/* and the
+     mfa.canSkip / requiresMfaReenrollment branches in
+     apps/api/src/controllers/auth.ts.
+
+2. DoseSpot V2 endpoints — only /coded and /send are implemented on
+   slice-4 (packages/dosespot/src/index.ts:602, 651). The earlier draft
+   mentioned /compiledcompound and /supply as alternatives; these do not
+   exist in the codebase yet and were removed.
+
+3. Schedule>0 controlled-substance gate — confirmed at:
+   - apps/insight-2/src/features/clinical/visits/modals/prescriptions/RxDraftFormModal.tsx:177,204
+   - apps/insight-2/src/features/clinical/visits/cards/VisitPrescriptionsCard.tsx:114
+     (re-checks the gate when applying a saved favorite, so cached
+     favorite metadata cannot bypass it)
+
+4. Database entities referenced in the attachment all exist on slice-4:
+   - packages/database/src/entities/RxDraft.ts
+   - packages/database/src/entities/VisitRx.ts
+   - packages/database/src/entities/VisitAuditEvent.ts
+   - packages/database/src/entities/DosespotPharmacy.ts
+   - Patient.pharmacyDoseSpotId, Provider.ePrescribeUserId columns
+
+5. 21 CFR Part 1311.300 question — left blank on the form. The "If yes..."
+   prefix makes it conditional on EPCS=Yes; since EPCS=No, blank is the
+   cleanest answer (avoids "No=ignorance" or "Yes=stealth EPCS plan"
+   misreadings).

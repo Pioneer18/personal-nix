@@ -12,7 +12,12 @@ in {
     ./packages.nix
     ./mcp.nix
     ./modules/proxy-rust-services.nix
+    ./modules/proxy-boot.nix
   ];
+
+  programs.zsh.shellAliases = {
+    proxy-shell = "$HOME/.local/bin/proxy-shell";
+  };
 
   # Symlink personal skills/ entries into ~/.claude/skills/.
   # Idempotent. Will not clobber a real directory at the same name (e.g.
@@ -46,6 +51,34 @@ in {
         "$REPO/scripts/secrets-from-keychain.sh" \
           || echo "personal-nix: secrets-from-keychain.sh reported missing items (see warnings above)"
       fi
+    '';
+
+  # Sync claude's auto-memory directory to iCloud Drive so memory follows
+  # the user across all their Macs. Idempotent — safe to re-run.
+  # v3 agentic-shell slice shell-13 — see:
+  #   ~/projects/personal-nix/wiki/decisions/agentic-shell-4-tier-state.md
+  home.activation.syncMemoryToiCloud =
+    lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      REPO="${repoPath}"
+      if [ -x "$REPO/scripts/sync-memory.sh" ]; then
+        "$REPO/scripts/sync-memory.sh" \
+          || echo "personal-nix: sync-memory.sh reported a warning (non-fatal)"
+      fi
+    '';
+
+  home.activation.writeProxyShellScript =
+    lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      mkdir -p "$HOME/.local/bin"
+      cat > "$HOME/.local/bin/proxy-tmux" << 'WRAPPER'
+#!/bin/sh
+exec /etc/profiles/per-user/pioneer/bin/tmux attach -t proxy
+WRAPPER
+      chmod +x "$HOME/.local/bin/proxy-tmux"
+      cat > "$HOME/.local/bin/proxy-shell" << 'WRAPPER'
+#!/bin/bash
+/usr/bin/open -na Ghostty --args --config-file="$HOME/.config/ghostty/proxy.config"
+WRAPPER
+      chmod +x "$HOME/.local/bin/proxy-shell"
     '';
 
   home.activation.buildTachikomaUI =
@@ -84,6 +117,17 @@ STOP
 launchctl kickstart -k "gui/$(id -u)/org.nix-community.home.tachikoma-ui" 2>/dev/null && echo "tachikoma-ui restarted" || echo "tachikoma-ui not found in launchd — run: dev"
 RESTART
       chmod +x "$HOME/.local/bin/tachikoma-ui-restart"
+    '';
+
+  # Configure SwiftBar to use our versioned plugin directory, and ensure all
+  # plugin scripts are executable. Idempotent — safe to re-run on every rebuild.
+  home.activation.setupSwiftBar =
+    lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      SWIFTBAR_PLUGINS="${repoPath}/swiftbar"
+      if [ -d "$SWIFTBAR_PLUGINS" ]; then
+        chmod +x "$SWIFTBAR_PLUGINS"/*.sh 2>/dev/null || true
+        /usr/bin/defaults write com.ameba.SwiftBar PluginDirectory "$SWIFTBAR_PLUGINS" 2>/dev/null || true
+      fi
     '';
 
   launchd.agents.tachikoma-ui = {

@@ -1,0 +1,10 @@
+slug: issue-14-feat-tachikoma-ui-add-launchd-service-de
+ref: Pioneer18/personal-nix#14
+source_type: issue
+title: feat(tachikoma-ui): add launchd service declaration
+body_file: /Users/pioneer/projects/personal-nix/wiki/tachikoma-eval/cases/issue-14-feat-tachikoma-ui-add-launchd-service-de.body.md
+original_pr: 14
+original_diff_lines: 425
+original_files_changed: 8
+acceptance_script: null
+pinned_at: 2026-05-16T18:33:29Z

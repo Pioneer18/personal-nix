@@ -1,0 +1,19 @@
+# PROXY Operations queue — single source of truth for Op ordering + active-Op selection.
+# See ~/Projects/tachikoma-starter/docs/adr/007-operations-and-objectives.md for design.
+#
+# Edit directly OR use `proxy op {new, mv, priority, state, snooze}` CLI.
+# Daemon watches this file via `notify` crate and syncs to DB on change.
+#
+# Schema:
+#   theaters:
+#     - theater: <name>
+#       ops:
+#         - <slug>   # ordered; index 0 = highest priority within theater
+#
+# Op metadata (priority, status, title) lives in operations/<slug>.md frontmatter.
+# This file owns ordering + theater membership only.
+
+theaters:
+  - theater: relymd
+    ops:
+      - relymd-q2-platform-stability

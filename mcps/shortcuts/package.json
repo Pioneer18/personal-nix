@@ -1,0 +1,13 @@
+{
+  "name": "shortcuts-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server wrapping macOS Shortcuts.app — exposes every installed Shortcut as a callable tool.",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
