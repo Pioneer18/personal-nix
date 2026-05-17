@@ -49,6 +49,27 @@ ensure_dirs() {
   fi
 }
 
+# TACHIKOMA-PROVIDER-BRIDGE: DELETE WHEN /TACHIKOMA QUEUE ROUTES THROUGH PROXY DISPATCH
+run_with_provider() {
+  local prompt_text="$1"
+  local model="${2:-sonnet}"
+  local log_file="${3:-/dev/null}"
+  if [ "${PROVIDER:-}" = "codex" ]; then
+    if [ -n "$model" ]; then
+      codex exec "$prompt_text" --model "$model" --sandbox workspace-write \
+        2>&1 | tee -a "$log_file"
+    else
+      codex exec "$prompt_text" --sandbox workspace-write \
+        2>&1 | tee -a "$log_file"
+    fi
+  else
+    env -u ANTHROPIC_API_KEY claude -p "$prompt_text" \
+      --model "$model" \
+      --dangerously-skip-permissions \
+      2>&1 | tee -a "$log_file"
+  fi
+}
+
 cmd_add() {
   if [ -z "${1:-}" ]; then
     cat <<'EOF' >&2
@@ -416,6 +437,10 @@ cmd_run() {
     local model_env=""
     if [ -n "$model_override" ]; then
       model_env="TACHIKOMA_MODEL=$model_override "
+    fi
+    # TACHIKOMA-PROVIDER-BRIDGE: DELETE WHEN /TACHIKOMA QUEUE ROUTES THROUGH PROXY DISPATCH
+    if [ -n "${PROVIDER:-}" ]; then
+      model_env="${model_env}PROVIDER=$PROVIDER "
     fi
     case "$source_type" in
       issue)
