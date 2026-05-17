@@ -64,11 +64,22 @@ $(cat "$PROGRESS")
 </progress>"
 
 set +e
-"${CLAUDE_ENV_ARGS[@]}" claude -p "$PROMPT" \
-  --model "$MODEL" \
-  --output-format text \
-  --dangerously-skip-permissions \
-  > "$SUMMARY.tmp" 2>/dev/null
+# TACHIKOMA-PROVIDER-BRIDGE: DELETE WHEN /TACHIKOMA QUEUE ROUTES THROUGH PROXY DISPATCH
+if [ "${PROVIDER:-}" = "codex" ]; then
+  if [ -n "$MODEL" ]; then
+    codex exec "$PROMPT" --model "$MODEL" --sandbox workspace-write \
+      > "$SUMMARY.tmp" 2>/dev/null
+  else
+    codex exec "$PROMPT" --sandbox workspace-write \
+      > "$SUMMARY.tmp" 2>/dev/null
+  fi
+else
+  "${CLAUDE_ENV_ARGS[@]}" claude -p "$PROMPT" \
+    --model "$MODEL" \
+    --output-format text \
+    --dangerously-skip-permissions \
+    > "$SUMMARY.tmp" 2>/dev/null
+fi
 RC=$?
 set -e
 
