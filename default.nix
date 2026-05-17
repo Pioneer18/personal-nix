@@ -11,6 +11,7 @@ in {
   imports = [
     ./packages.nix
     ./mcp.nix
+    ./modules/proxy-rust-services.nix
   ];
 
   # Symlink personal skills/ entries into ~/.claude/skills/.
