@@ -5,9 +5,14 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     home-manager.url = "github:nix-community/home-manager";
     home-manager.inputs.nixpkgs.follows = "nixpkgs";
+    # Rust build tool — used by modules/proxy-rust-services.nix to build the
+    # proxy-daemon/proxy/proxy-voice cargo workspace via crane. The module
+    # fetches crane inline via pkgs.fetchFromGitHub at the same rev pinned
+    # here so the lock file remains the single source of truth for the pin.
+    crane.url = "github:ipetkov/crane/v0.20.2";
   };
 
-  outputs = { self, nixpkgs, home-manager, ... }: {
+  outputs = { self, nixpkgs, home-manager, crane, ... }: {
     # Importable home-manager module — consumed by:
     #   - RelyMD team's gitignored local slot (imports = [ ~/projects/personal-nix ])
     #   - Standalone home-manager flakes on non-RelyMD Macs
