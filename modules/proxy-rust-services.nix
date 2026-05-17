@@ -36,12 +36,22 @@ let
   # so they must survive the source-tree filter. The default
   # craneLib.cleanCargoSource would strip them as non-Rust files and the
   # cargo build fails with `couldn't read .../templates/*.tmpl`.
+  #
+  # Also include daemon/migrations/**/*.sql — `sqlx::migrate!("./migrations")`
+  # in daemon/src/db/mod.rs is a proc-macro that reads the .sql files at
+  # compile time and embeds them into the binary. Without this filter rule,
+  # crane strips the .sql files, the proc-macro embeds zero migrations, and
+  # the daemon refuses to boot (sqlx sees the DB has applied versions the
+  # binary doesn't know about → "previously applied but is missing in the
+  # resolved migrations"). See `daemon/migrations-deferred/v2/README.md` for
+  # the deferred-v2 quarantine convention.
   workspaceSrc = lib.cleanSourceWith {
     src = /Users/pioneer/Projects/tachikoma-starter;
     name = "tachikoma-starter-source";
     filter = path: type:
       (craneLib.filterCargoSources path type)
-      || (builtins.match ".*/daemon/templates/.*\\.tmpl$" path != null);
+      || (builtins.match ".*/daemon/templates/.*\\.tmpl$" path != null)
+      || (builtins.match ".*/daemon/migrations/.*\\.sql$" path != null);
   };
 
   # --- native build inputs -----------------------------------------------
