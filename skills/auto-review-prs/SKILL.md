@@ -1,11 +1,11 @@
 ---
 name: auto-review-prs
-description: Two-pass PR triage on the current repo's `dev` branch. Pass 1 silently auto-merges PRs that meet the strict `clean` rubric or the relaxed `good-enough` rubric, re-evaluating every open PR including ones previously labeled `auto-merge-blocked`. Pass 2 walks you through the rest one-by-one with a plain-English briefing, contextual actions (request reviewer, post comment, draft tests, resolve conflicts), and a Diagnose escape hatch. Refuses to run inside `~/Projects/platform`. Triggers — `/auto-review-prs` (full pass), `/auto-review-prs auto` or `--autonomous-only` (autonomous only), "auto-merge PRs", "walk me through open PRs", or any natural-language request for assisted PR triage.
+description: Two-pass PR triage on the current repo's integration branch (auto-detected from `dev → develop → main → master`). Pass 1 silently auto-merges PRs that meet the strict `clean` rubric or the relaxed `good-enough` rubric, re-evaluating every open PR including ones previously labeled `auto-merge-blocked`. Pass 2 walks you through the rest one-by-one with a plain-English briefing, contextual actions (request reviewer, post comment, draft tests, resolve conflicts), and a Diagnose escape hatch. Refuses to run inside `~/Projects/platform`. Triggers — `/auto-review-prs` (full pass), `/auto-review-prs auto` or `--autonomous-only` (autonomous only), "auto-merge PRs", "walk me through open PRs", or any natural-language request for assisted PR triage.
 ---
 
 # auto-review-prs
 
-Two-pass PR triage for the current repo's `dev` branch. Pass 1 silently merges the safe stuff. Pass 2 walks you through the rest.
+Two-pass PR triage for the current repo's integration branch (`$BASE_BRANCH`, auto-detected at pre-flight). Pass 1 silently merges the safe stuff. Pass 2 walks you through the rest.
 
 ## Invocation
 
@@ -19,7 +19,7 @@ Two-pass PR triage for the current repo's `dev` branch. Pass 1 silently merges t
 
 1. **Pass 1 (autonomous) asks no questions.** If anything is ambiguous, the PR drops into the walkthrough queue.
 2. **Banned repo.** If the cwd resolves under `/Users/pioneer/Projects/platform`, print an error and exit immediately.
-3. **Target branch is `dev`.** If `dev` doesn't exist on the remote, exit with an error before doing anything.
+3. **Target branch is `$BASE_BRANCH`.** Resolved during pre-flight as the first of `dev`, `develop`, `main`, `master` that exists on the remote. If none of those exist, exit with an error before doing anything. The chosen name is referenced as `$BASE_BRANCH` throughout the rest of this spec — substitute literally when making API calls or rendering output.
 4. **Squash merges only, branch deleted after.** No merge commits, no rebases.
 5. **Auto-merge always leaves an audit trail.** For PRs authored by *another* GitHub user, post a `--approve` review with the rubric summary, then squash-merge. For self-authored PRs, GitHub hard-blocks `--approve` (`GraphQL: Can not approve your own pull request`) regardless of branch protection — post the rubric summary as a regular PR comment instead, then merge. Either way the rubric ends up on the PR thread.
 6. **Eval-gate paths never auto-merge.** Any PR touching `supabase/functions/chat-with-ai/**` or `eval/**` is forced into the walkthrough (tier 3) regardless of how clean the rest looks.
@@ -33,7 +33,7 @@ Run these sequentially. Any failure → exit with the message, do not enter pass
 1. Verify cwd is a git repo: `git rev-parse --show-toplevel`.
 2. Resolve cwd; check it is **not** inside `/Users/pioneer/Projects/platform`.
 3. Verify `gh auth status` succeeds.
-4. Verify `dev` branch exists on the remote: `gh api repos/{owner}/{repo}/branches/dev` returns 200.
+4. Resolve `$BASE_BRANCH` by probing the remote in order: `dev`, `develop`, `main`, `master`. The first name for which `gh api repos/{owner}/{repo}/branches/<name>` returns 200 wins. If none return 200, exit with `"no recognized base branch (dev|develop|main|master) on remote"`. Announce the resolved name in the mode line below.
 5. Ensure the `auto-merge-blocked` label exists; create if missing:
    ```bash
    gh label list --search auto-merge-blocked --json name -q '.[].name' | grep -qx auto-merge-blocked \
@@ -41,14 +41,14 @@ Run these sequentially. Any failure → exit with the message, do not enter pass
    ```
 6. Ensure the report path is writable: `mkdir -p ~/projects/personal-nix/wiki && touch ~/projects/personal-nix/wiki/auto-merged-pr-report.md`.
 
-Announce mode in one line — `"Auto-review on <owner>/<repo> → dev. Mode: <full | autonomous-only>."` — then start pass 1.
+Announce mode in one line — `"Auto-review on <owner>/<repo> → $BASE_BRANCH. Mode: <full | autonomous-only>."` — then start pass 1.
 
 ## Pass 1 — Autonomous
 
 ### Fetch and order
 
 ```bash
-gh pr list --base dev --state open --json number,title,author,isDraft,labels,headRefName,additions,deletions,files,mergeable,mergeStateStatus,statusCheckRollup --limit 100
+gh pr list --base "$BASE_BRANCH" --state open --json number,title,author,isDraft,labels,headRefName,additions,deletions,files,mergeable,mergeStateStatus,statusCheckRollup --limit 100
 ```
 
 Drop drafts. **Keep** PRs with `auto-merge-blocked` — they get re-evaluated.
@@ -110,7 +110,7 @@ gh pr comment <N> --body "<self-merge template — see Comment templates>"
 gh pr merge <N> --squash --delete-branch
 ```
 
-On the `dev` ruleset (`Required approvals: 0` per [ADR 003 in healthbite](https://github.com/MioMarker/healthbite/blob/main/docs/adr/003-self-approval-on-dev.md)), the merge succeeds without an approval. The rubric ends up on the PR thread either way — different mechanism, same audit trail.
+For the canonical case (healthbite's `dev` ruleset has `Required approvals: 0` per [ADR 003](https://github.com/MioMarker/healthbite/blob/main/docs/adr/003-self-approval-on-dev.md)), the merge succeeds without an approval. In other repos, whether self-merge succeeds depends on that repo's branch protection — if the merge call fails with an approval requirement, drop the PR into walkthrough tier 1 with reason `"merge call failed: <stderr>"` per the failure-handling rules below. The rubric ends up on the PR thread either way — different mechanism, same audit trail.
 
 After a successful merge (either path):
 
@@ -162,7 +162,7 @@ For each PR in the queue, in tier order:
 ```
 ─── PR #<N> ───────────────────────────────────────────
 <title>
-Author: <login>  •  <head-branch> → dev
+Author: <login>  •  <head-branch> → $BASE_BRANCH
 Size: <total> lines  •  <L>L + <T>T + <O>O  •  CI: <status>
 
 ▸ What this PR does
@@ -234,7 +234,7 @@ Posted via `gh pr review <N> --approve --body ...`.
 - Scope: matches title/description
 - Tests: <touched | N/A: pure-UI carve-out | N/A: allowlist only>
 - CI: <green (<N> checks passed) | not configured>
-- Conflicts: none against `dev`
+- Conflicts: none against `$BASE_BRANCH`
 ```
 
 ### Approval — good-enough (other-authored PR)
@@ -249,7 +249,7 @@ Posted via `gh pr review <N> --approve --body ...`.
 - Scope: matches title/description
 - Tests: relaxed via <path carve-out: <files> | size carve-out: <N> logic lines, <total> total>
 - CI: <green | not configured>
-- Conflicts: none against `dev`
+- Conflicts: none against `$BASE_BRANCH`
 ```
 
 ### Self-merge comment — clean (self-authored PR)
@@ -264,9 +264,9 @@ Posted via `gh pr comment <N> --body ...`. GitHub blocks self-approval, so this 
 - Scope: matches title/description
 - Tests: <touched | N/A: pure-UI carve-out | N/A: allowlist only>
 - CI: <green (<N> checks passed) | not configured>
-- Conflicts: none against `dev`
+- Conflicts: none against `$BASE_BRANCH`
 
-_Self-authored on `dev` — GitHub blocks the `--approve` review on own PRs, so the rubric is recorded as a comment instead. Merge enabled by ADR 003._
+_Self-authored on `$BASE_BRANCH` — GitHub blocks the `--approve` review on own PRs, so the rubric is recorded as a comment instead. Merge succeeds when the repo's protection allows zero approvals (e.g. healthbite per ADR 003)._
 ```
 
 ### Self-merge comment — good-enough (self-authored PR)
@@ -279,9 +279,9 @@ _Self-authored on `dev` — GitHub blocks the `--approve` review on own PRs, so 
 - Scope: matches title/description
 - Tests: relaxed via <path carve-out: <files> | size carve-out: <N> logic lines, <total> total>
 - CI: <green | not configured>
-- Conflicts: none against `dev`
+- Conflicts: none against `$BASE_BRANCH`
 
-_Self-authored on `dev` — GitHub blocks the `--approve` review on own PRs, so the rubric is recorded as a comment instead. Merge enabled by ADR 003._
+_Self-authored on `$BASE_BRANCH` — GitHub blocks the `--approve` review on own PRs, so the rubric is recorded as a comment instead. Merge succeeds when the repo's protection allows zero approvals (e.g. healthbite per ADR 003)._
 ```
 
 ### Walkthrough-generated comment

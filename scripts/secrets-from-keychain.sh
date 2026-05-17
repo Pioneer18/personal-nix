@@ -36,7 +36,16 @@ read_keychain() {
 echo "→ Reading secrets from Keychain"
 read_keychain "claude_code_oauth" "CLAUDE_CODE_OAUTH_TOKEN"
 read_keychain "github_token" "GITHUB_TOKEN"
-read_keychain "anthropic_api_key" "ANTHROPIC_API_KEY"
+read_keychain "anthropic_api_key" "ANTHROPIC_API_KEY_COMPANY"
+read_keychain "gitingest_pat" "GITINGEST_PAT"
+
+# Labels for Anthropic account context (used by menu bar indicator and logs).
+{
+  echo ''
+  echo '# Anthropic account labels'
+  echo 'export ANTHROPIC_KEY_LABEL_COMPANY="RelyMD"'
+  echo 'export ANTHROPIC_KEY_LABEL_PERSONAL="Max"'
+} >> "$TMP"
 
 # Aliases for tools that look for different env var names.
 {

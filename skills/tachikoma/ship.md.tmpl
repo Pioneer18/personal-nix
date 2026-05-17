@@ -104,7 +104,15 @@ gh pr create \
   --base {{PR_TARGET_BRANCH}} \
   --head {{BASE_BRANCH}}
 ```
-Print `  ✓ PR opened  <PR_URL>`
+Capture the printed PR URL. Print `  ✓ PR opened  <PR_URL>`
+
+Then link the PR to the queued work-request so PROXY's pr_sync poller can auto-flip `status` to `done` on merge/close:
+
+Print `  Linking PR to work_request…`
+Run: `proxy queue link {{SLUG}} <PR_URL>`
+
+- On success: print `  ✓ PR linked  (auto-done on merge)`.
+- On non-zero exit (no matching slug in the DB, daemon unreachable, `proxy` CLI absent on PATH, etc.): print `  ⚠ proxy queue link failed — github_pr not set (work-queue row will need /work-queue done {{SLUG}})` and continue. This is best-effort: the PR is already open, and Step 7 (work-queue cleanup) is the legacy backstop for rows the daemon doesn't know about.
 
 {{ISSUE_LABEL_BLOCK}}
 

@@ -104,9 +104,9 @@ export async function streamChat(
   messages: ChatMessage[],
   res: Response
 ): Promise<void> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.ANTHROPIC_API_KEY_COMPANY;
   if (!apiKey) {
-    res.status(500).json({ error: "ANTHROPIC_API_KEY not set" });
+    res.status(500).json({ error: "ANTHROPIC_API_KEY_COMPANY not set" });
     return;
   }
 

@@ -1,0 +1,10 @@
+slug: issue-56-feat-dispatch-admission-gated-work-reque
+ref: MioMarker/tachikoma-starter#56
+source_type: issue
+title: feat(dispatch): admission-gated work-request dispatch endpoint + Start button
+body_file: /Users/pioneer/projects/personal-nix/wiki/tachikoma-eval/cases/issue-56-feat-dispatch-admission-gated-work-reque.body.md
+original_pr: 62
+original_diff_lines: 27
+original_files_changed: 2
+acceptance_script: null
+pinned_at: 2026-05-16T18:33:31Z

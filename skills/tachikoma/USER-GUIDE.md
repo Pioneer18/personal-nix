@@ -86,9 +86,9 @@ The old "Phase 1 / Phase 6 / Phase R" numbering is gone. Use the names above.
 | `/tachikoma status <slug>` | Drill into one specific loop. |
 | `/tachikoma stop` | SIGTERM the running loop. Picker if multiple. |
 | `/tachikoma stop <slug>` / `--all` | Stop a specific loop, or every loop in the repo. |
-| `/tachikoma queue` | Single worker drains the local queue, one item at a time, in the current session. |
-| `/tachikoma queue <N>` | **Parallel drain — N background workers** sharing the same queue. Each worker independently pulls the next open item and runs it. Use for overnight runs (e.g. `queue 3`). N must be ≥ 2. |
-| `/tachikoma queue <slug>` | Run a single specific queue item. |
+| `/tachikoma queue` | Single worker, auto-grabs the next ready slice via `proxy queue grab` (respecting Epic order, intra-Epic position, `blocked_by`, `paused`). Empty queue exits cleanly with a hint to add work. |
+| `/tachikoma queue <N>` | **Parallel drain — N background workers** sharing the same queue. Each worker independently auto-grabs the next ready slice. Use for overnight runs (e.g. `queue 3`). N must be ≥ 2. |
+| `/tachikoma queue <slug>` | **Manual override** — bypass auto-grab and run that specific item. Useful for re-running a `needs-triage` slice or hand-picking out of Epic order. |
 | `/tachikoma queue --caffeinated` (alias `-C`) | Same drain, but wrap each launch in `caffeinate -d` to prevent macOS sleep. Combinable with `<N>`. |
 | `/tachikoma queue <org/repo>` | Drain a GitHub-sourced queue (`ready-for-agent AND NOT agent-running` issues from `<repo>`). Combinable with `<N>` (e.g. `queue MioMarker/healthbite 3`). |
 | `/tachikoma queue add` | Create a new work-request (guided interview). |
@@ -272,40 +272,49 @@ Auto-retry logic:
 
 The queue is a folder of markdown files (`~/projects/personal-nix/wiki/work-requests/`). Each file is a structured task with frontmatter (`status`, `target_repo`, `github_issue`, `failure_count`).
 
-### Grab from the PROXY queue
+### Drain the queue
 
-**Mental model: `tachikoma queue` (no args) grabs ONE slice from the PROXY queue.** It calls `proxy queue grab` to atomically claim the next ready `open` slice, runs the full lifecycle on it in its own worktree, and exits. Call it again to grab the next one. The queue is PROXY-managed — `QUEUE.yaml` + Postgres, ordered by priority within each Epic.
+**Mental model: a "drain" is one worker against the shared queue.** It pops the next `open` work-request, runs the full lifecycle on it in its own worktree, then pops the next. Repeats until the queue is empty or you stop it. The queue itself is the folder of markdown files — there's no central process owning it.
+
+You can run **multiple workers in parallel** — they share the queue and partition the work via the atomic `open` → `grabbed` status flip on each file. Same model as a worker pool draining a job queue.
 
 ```
-/tachikoma queue                  # grab next ready slice from PROXY, run it
-/tachikoma queue <slug>           # run a specific slice by slug (manual override)
-/tachikoma queue --caffeinated    # prevent macOS sleep during the run
+/tachikoma queue                  # 1 worker, foreground — auto-grabs the next ready slice
+/tachikoma queue 3                # 3 background workers — overnight throughput
+/tachikoma queue <slug>           # manual override — run one specific item (bypass auto-grab)
+/tachikoma queue --caffeinated    # prevent macOS sleep (good for overnight runs)
 /tachikoma queue -C               # alias for --caffeinated
-/tachikoma queue 3                # 3 background workers — each grabs its own slice
 /tachikoma queue 3 -C             # 3 workers + sleep prevention (typical AFK launch)
 ```
 
-**If the queue is empty** (no `open` slices, or all remaining candidates are blocked/paused):
+### Auto-grab (no-slug form)
+
+`/tachikoma queue` with no positional argument delegates slice selection to the daemon. The skill shells out to `lib/queue-grab.sh`, which wraps `proxy queue grab` — that returns the next ready slug honoring Epic order, intra-Epic position, `blocked_by` constraints, and `paused` state.
+
+Worked example: an Epic with three open dependency-free slices, run sequentially:
+
 ```
+$ /tachikoma queue          # → grabs epic-a-1, runs lifecycle, ships PR
+$ /tachikoma queue          # → grabs epic-a-2, runs lifecycle, ships PR
+$ /tachikoma queue          # → grabs epic-a-3, runs lifecycle, ships PR
+$ /tachikoma queue
 Nothing to grab. Add an Epic with `proxy queue add-epic` or create work-requests.
 ```
 
-**If a slice is grabbed**, the full lifecycle runs: preflight → scaffold → launch → ship. The slice gets its own worktree, branch, and PR.
+If `proxy` is not on PATH (bootstrap before the daemon is installed), the skill falls back to a legacy filesystem scan over `~/projects/personal-nix/wiki/work-requests/` and picks the first `status: open` item that passes the readiness check.
 
-**Invoking three times** drains a three-slice Epic:
-```
-/tachikoma queue   # grabs slice-1
-/tachikoma queue   # grabs slice-2
-/tachikoma queue   # grabs slice-3
-/tachikoma queue   # queue empty — prints message and exits
-```
+Auto-grab only ever surfaces `open` slices — items already in `grabbed`, `done`, or `needs-triage` are skipped by the daemon-side algorithm; the wrapper does not re-filter.
 
-With `queue N` (N ≥ 2): the foreground session collects batch preferences once, writes them to `~/.claude/tachikoma.conf`, then spawns N detached `claude -p "/tachikoma queue"` workers and exits. Each worker calls `proxy queue grab` independently; the Postgres CAS ensures no two workers claim the same slice.
+Each item gets its own worktree, branch, and PR — the full preflight → scaffold → launch → ship lifecycle per item. Failures are logged and skipped — the queue keeps moving.
+
+Queue drain runs items with `--once` mode (sequential, foreground) regardless of your `iteration_mode` config. With `queue N` the foreground session collects your batch preferences once, writes them to `~/.claude/tachikoma.conf`, then spawns N detached `claude -p "/tachikoma queue"` workers and exits.
 
 **Sizing N:**
-- `queue` (no N) — one slice at a time; keep up with reviews in near-real-time.
-- `queue 2`–`queue 3` — typical overnight throughput; balances API rate limits with review backlog.
-- `queue 5+` — high risk of hitting Anthropic per-minute rate caps; only if your tier supports it.
+- `queue` (no N) — keep up with reviews in near-real-time.
+- `queue 2`–`queue 3` — typical overnight throughput; balances API rate limits with review backlog the next morning.
+- `queue 5+` — high risk of hitting Anthropic per-minute caps; do this only if you have a dedicated review session planned and your tier supports it.
+
+Workers compete on a single shared file-based queue. The race window between two workers grabbing the same item is small but non-zero — see the SKILL spec for hardening notes.
 
 ### Managing the queue
 

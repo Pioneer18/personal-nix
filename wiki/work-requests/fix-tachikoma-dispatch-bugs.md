@@ -1,10 +1,14 @@
 ---
-status: open
+status: done
 priority: 3
 target_repo: ~/projects/personal-nix
 github_issue: ""
 failure_count: 0
-last_updated: 2026-05-15
+last_updated: 2026-05-16
+shipped_pr: https://github.com/MioMarker/tachikoma-starter/pull/67
+shipped_commits:
+  - personal-nix:7097468 (MCP slug + tachikoma.sh dirty-tree split + prompt package-manager rule)
+  - tachikoma-starter#67 (daemon dispatch empty-commit fix)
 ---
 
 # Fix tachikoma dispatch + finalize bugs

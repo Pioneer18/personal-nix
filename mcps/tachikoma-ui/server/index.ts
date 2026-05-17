@@ -18,10 +18,10 @@ import { streamChat } from "./claude.ts";
 import type { ChatMessage } from "./claude.ts";
 
 const HOME = os.homedir();
-const BMO_FACES_DIR = path.join(HOME, "Desktop", "bmo faces", "set");
+const BMO_FACES_DIR = path.join(HOME, "projects", "personal-nix", "assets", "bmo-faces", "set");
 
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error("[server] ERROR: ANTHROPIC_API_KEY is not set. Exiting.");
+if (!process.env.ANTHROPIC_API_KEY_COMPANY) {
+  console.error("[server] ERROR: ANTHROPIC_API_KEY_COMPANY is not set. Exiting.");
   process.exit(1);
 }
 

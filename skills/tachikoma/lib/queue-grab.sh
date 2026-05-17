@@ -1,26 +1,51 @@
 #!/usr/bin/env bash
-# Thin wrapper around `proxy queue grab` with error handling.
+# queue-grab.sh — thin wrapper around `proxy queue grab`.
 #
-# Stdout: grabbed slug (one line, no trailing newline) or nothing if the
-#         queue is empty / all candidates are blocked or paused.
-# Exit 0: success (slug grabbed OR queue empty).
-# Non-zero: proxy CLI missing, daemon connection failed, or unexpected error.
+# Memory-pressure decisions now live in `proxy-daemon`. Before grabbing
+# a slug we ask `proxy admission check tachikoma` for a verdict:
+#   - exit 0 → admit, proceed to grab.
+#   - exit 3 → defer; daemon-side rubric refused; forward the reason.
+# Set TACHIKOMA_SKIP_PRESSURE_CHECK=1 to bypass the admission gate.
 #
-# The caller (SKILL.md Step 0a) interprets:
-#   empty stdout + exit 0   → queue empty; print user-facing message and exit
-#   non-empty stdout + exit 0 → slug grabbed; proceed with tachikoma queue <slug>
-#   non-zero exit            → proxy error; surface error and abort
+# Shell-side exit codes (unchanged):
+#   0 — slug printed to stdout (single line, no trailing newline).
+#   1 — queue empty (nothing ready). Stdout empty.
+#   2 — `proxy` CLI not found.
+#   3 — daemon refused admission OR `proxy queue grab` itself failed.
+set -e
+set -o pipefail
 
-set -euo pipefail
+PROXY_BIN="${PROXY_BIN:-proxy}"
 
-if ! command -v proxy >/dev/null 2>&1; then
-  echo "✗ proxy CLI not found on PATH." >&2
-  echo "  → Ensure ~/.local/bin is on PATH (PROXY install location)." >&2
+if ! command -v "$PROXY_BIN" >/dev/null 2>&1; then
+  echo "queue-grab: 'proxy' CLI not found on PATH (set PROXY_BIN to override)" >&2
+  exit 2
+fi
+
+if [[ -z "${TACHIKOMA_SKIP_PRESSURE_CHECK:-}" ]]; then
+  set +e
+  ADMIT_ERR="$("$PROXY_BIN" admission check tachikoma 2>&1 1>/dev/null)"
+  ADMIT_RC=$?
+  set -e
+  if [[ $ADMIT_RC -eq 3 ]]; then
+    echo "queue-grab: admission deferred: ${ADMIT_ERR}" >&2
+    exit 3
+  fi
+fi
+
+set +e
+OUT="$("$PROXY_BIN" queue grab 2>&1)"
+RC=$?
+set -e
+
+if [ $RC -ne 0 ]; then
+  echo "queue-grab: proxy queue grab failed (rc=$RC): $OUT" >&2
+  exit 3
+fi
+
+SLUG="$(printf '%s' "$OUT" | tr -d '[:space:]')"
+if [ -z "$SLUG" ]; then
   exit 1
 fi
 
-# `proxy queue grab` prints the slug to stdout and exits 0 on success.
-# It prints nothing (still exit 0) when the queue is empty, the QUEUE.yaml
-# is missing, or every candidate is blocked/paused/grabbed.
-# Non-zero exit indicates a real error (daemon down, DB unreachable, etc.).
-proxy queue grab
+printf '%s' "$SLUG"

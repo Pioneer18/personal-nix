@@ -16,7 +16,7 @@ Pioneer18's machine wiki. Knowledge that outlives any single Claude session, que
 - `runbooks/` — "when X breaks, do Y"
 - `inbox/` — uncategorized captures (triage later)
 - `notes/` — random saves, tag-categorized
-- `seeds/` — pre-work-request ideas; promoted via `/grill-me` → `/create-work-request` (deletes seed on promotion). Interim surface until PROXY's notebook ships (M6); see `decisions/seeds-folder.md`.
+- `seeds/` — pre-brief ideas; promoted via `/grill-me` → `/brief` (which writes a v2 dossier into PROXY and deletes the seed on promotion). Interim surface until PROXY's notebook ships (M6); see `decisions/seeds-folder.md`.
 - `work-requests/` — work captured for tachikoma to pick up later (alternative to GitHub issues)
 
 ## Invocation
@@ -108,8 +108,8 @@ If a `glossary/` entry already exists for the term, prefer **editing** the exist
 `seeds/` entries are the inbox for ideas the user knows they want to act on later but doesn't want to commit to as a full work-request yet (no required `target_repo`, no acceptance criteria, just a captured thought). Lifecycle:
 
 - Capture is intentionally low-friction: `title`, `tags`, body, optional `target_repo`.
-- The user grills a seed via `/grill-me <seed-slug>` to expand it into a work-request spec.
-- Promotion via `/create-work-request <seed-slug>` (skill TBD) writes `wiki/work-requests/<slug>.md` with `promoted_from: <seed-slug>` and **deletes** the source seed in the same operation. The git history is the audit trail; no archive subdir.
+- The user grills a seed via `/grill-me <seed-slug>` to expand it into a PROXY v2 dossier-brief spec.
+- Promotion via `/brief <seed-slug>` writes a transient v2 dossier-brief markdown file, invokes `proxy brief <slug>` to create the `dossiers` row in PROXY's database, and **deletes** the source seed in the same operation. Git history is the audit trail; no archive subdir.
 - Do not maintain a `status: promoted` state — promotion = deletion. If a user changes their mind about a seed, just delete it.
 
 This subdir is **interim** until PROXY's notebook UI ships (v1.5+, M6). At migration, a one-shot importer maps every seed into a `notebook.idea` row and `seeds/` is removed from the vocabulary. See `decisions/seeds-folder.md`.
@@ -185,7 +185,7 @@ Pioneer18's personal knowledge base at `~/projects/personal-nix/wiki/`. Syncs ac
 | `runbooks/` | "When X breaks, do Y" |
 | `inbox/` | Uncategorized captures (triage later) |
 | `notes/` | Random saves, tag-categorized |
-| `seeds/` | Pre-work-request ideas; promote via `/grill-me` → `/create-work-request` |
+| `seeds/` | Pre-brief ideas; promote via `/grill-me` → `/brief` |
 | `work-requests/` | Work items for tachikoma |
 
 ### Example workflow
@@ -209,9 +209,9 @@ The pipeline:
 /wiki add seeds                       — capture (title, tags, optional target_repo, body)
 /wiki seeds                           — browse pending ideas
 /wiki seeds <query>                   — search them
-/grill-me wiki/seeds/<slug>.md        — interview to expand into a work-request spec
-/create-work-request <slug>           — promote: writes work-requests/<slug>.md with
-                                        `promoted_from: <slug>` and DELETES the seed
+/grill-me wiki/seeds/<slug>.md        — interview to expand into a v2 dossier-brief spec
+/brief <slug>                         — promote: writes /tmp/proxy-brief-<slug>.md, invokes
+                                        `proxy brief <slug>` (creates dossiers row), DELETES the seed
 ```
 
 Key properties:
@@ -221,7 +221,7 @@ Key properties:
 - **Repo-agnostic seeds are fine.** Some ideas don't have an obvious target repo yet; that's the whole point of capturing them before committing to a work-request.
 - **Interim surface.** When PROXY's notebook UI ships (M6 / v1.5+), a one-shot importer maps every seed into a `notebook.idea` row and the `seeds/` directory is retired from the wiki vocabulary. See `decisions/seeds-folder.md` for the migration plan.
 
-The `/create-work-request` skill is itself the first seed (`seeds/create-work-request-skill.md`) — dogfooding the surface.
+Historical note: the original `/create-work-request` skill was the first seed dogfooding this surface. It has since been superseded by `/brief`, which writes a PROXY v2 dossier directly into the daemon rather than a v1 work-request markdown file.
 
 ### Privacy
 

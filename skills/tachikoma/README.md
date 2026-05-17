@@ -20,14 +20,26 @@ Pocock's "Tachikoma Wiggum" autonomous AI coding loop, adapted to this machine, 
 | `/tachikoma resume` (optionally `<slug>`) | Recover phase — re-launch an interrupted loop. Picker if >1 recoverable. |
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Read-only telemetry. No args: compact summary table across all tachikoma worktrees in the repo. With slug: drill in. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is a tachikoma worktree. Picker if >1 running. |
-| `/tachikoma queue` | **Auto-grab from PROXY.** Calls `proxy queue grab` to atomically claim the next ready slice. If a slug is returned: runs the full tachikoma lifecycle (plan → ship) for that one item. If the queue is empty: prints `"Nothing to grab. Add an Epic with \`proxy queue add-epic\` or create work-requests."` and exits cleanly. Invoke three times to process three items. With `--caffeinated` / `-C`: wraps the launch with `caffeinate -d` to prevent macOS sleep. |
-| `/tachikoma queue <slug>` | **Manual override.** Run a single specific work-request by slug (full lifecycle). Skips auto-grab. Use when you know the exact slug. |
-| `/tachikoma queue <N>` | **Parallel drain — N background workers** (N ≥ 2). Each worker is an independent `claude -p "/tachikoma queue"` session; each calls `proxy queue grab` to claim its item atomically. Workers never collide. Typical overnight launch: `/tachikoma queue 3 -C`. |
+| `/tachikoma queue` (optionally `<slug>`) | Single worker against the shared work-request queue. **No `<slug>` (default, since proxy-29):** the next ready slice is chosen by the proxy daemon via `proxy queue grab` (delegated through `lib/queue-grab.sh`), respecting Epic order, intra-Epic position, `blocked_by`, and `paused`. The grabbed slug feeds the rest of the run as if it had been typed. Empty queue → prints `"Nothing to grab. Add an Epic with \`proxy queue add-epic\` or create work-requests."` and exits 0. **With `<slug>`:** manual override — bypasses the grab algorithm and runs that specific item (useful for re-running a `needs-triage` item or hand-picking out of order). **Fallback:** if `proxy` CLI is missing, falls back to the legacy filesystem scan. With `--caffeinated` / `-C`: wraps each item's launch with `caffeinate -d` to prevent macOS sleep during long overnight runs. |
+| `/tachikoma queue <N>` | **Parallel drain — N background workers** (N ≥ 2). Each worker is an independent `claude -p "/tachikoma queue"` session pulling from the same shared queue; coordination is the atomic `open` → `grabbed` flip on each work-request file. Typical overnight launch: `/tachikoma queue 3 -C`. |
 | `/tachikoma queue <repo>` | GitHub-sourced queue drain. Fetches all `ready-for-agent AND NOT agent-running` issues from `<repo>` (`org/repo`), auto-creates linked work_requests for any without one, then runs normal queue drain. Fires a macOS HITL notification + terminal summary when no `ready-for-agent` issues remain. Combinable with `<N>`. |
 | `/tachikoma queue add` (optionally `<target-repo>`) | Create a new work-request (guided interview). |
 | `/tachikoma queue list` | Show all work-requests and their status. |
 | `/tachikoma queue stop` (optionally `<worker-id>` or `--all`) | Abort a running queue-drain worker after its current item finishes. With multiple workers: specify `<worker-id>` or `--all`. |
 | `/tachikoma sitrep` | Read-only status across all live queue-drain workers. |
+
+### Queue auto-grab (no-slug form)
+
+`/tachikoma queue` with no argument delegates slice selection to `proxy queue grab` via `lib/queue-grab.sh`. Worked example — three sequential drains of an Epic with three ready slices:
+
+```
+$ /tachikoma queue   # → grabs epic-a-1
+$ /tachikoma queue   # → grabs epic-a-2  (epic-a-1 is `done`, daemon skips it)
+$ /tachikoma queue   # → grabs epic-a-3
+$ /tachikoma queue   # → "Nothing to grab. Add an Epic with `proxy queue add-epic` or create work-requests."
+```
+
+Manual override: `/tachikoma queue <slug>` bypasses the daemon entirely and runs that specific item — useful for re-running a `needs-triage` slice or hand-picking out of order. Bootstrap fallback: if `proxy` is not on PATH, the skill scans the filesystem for the first `status: open` work-request that passes the readiness check.
 
 ## File layout
 
@@ -37,7 +49,9 @@ Pocock's "Tachikoma Wiggum" autonomous AI coding loop, adapted to this machine, 
 ├── SKILL.md                                  orchestrator instructions
 ├── tachikoma.sh.tmpl                             bash loop template
 ├── prompt.md.tmpl                            per-iteration prompt template
-└── AGENT-BRIEF.tmpl                          remote-mode comment template
+├── AGENT-BRIEF.tmpl                          remote-mode comment template
+└── lib/
+    └── queue-grab.sh                         wraps `proxy queue grab` (proxy-29)
 
 ~/.claude/skills/tachikoma                       ← symlink (created by `dev`)
 ```

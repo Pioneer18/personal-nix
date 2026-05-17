@@ -1,0 +1,10 @@
+slug: issue-1117-feat-dev-intake-collapse-rice-to-ai-only
+ref: relymd/platform#1117
+source_type: issue
+title: feat(dev-intake): collapse RICE to AI-only canonical [PLRM-1222]
+body_file: /Users/pioneer/projects/personal-nix/wiki/tachikoma-eval/cases/issue-1117-feat-dev-intake-collapse-rice-to-ai-only.body.md
+original_pr: 1129
+original_diff_lines: 403
+original_files_changed: 8
+acceptance_script: null
+pinned_at: 2026-05-16T18:33:33Z
