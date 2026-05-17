@@ -3,7 +3,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { execSync, spawn } from "child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, chmodSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, chmodSync, statSync } from "fs";
 import { join, basename, dirname } from "path";
 import { homedir } from "os";
 
@@ -12,6 +12,7 @@ const PROJECTS_DIR = join(HOME, "projects");
 const PERSONAL_NIX_DIR = join(PROJECTS_DIR, "personal-nix");
 const WORK_REQUESTS_DIR = join(PERSONAL_NIX_DIR, "wiki", "work-requests");
 const TACHIKOMA_SKILLS_DIR = join(HOME, ".claude", "skills", "tachikoma");
+const TACHIKOMA_RUNTIME_DIR = join(HOME, ".tachikoma");
 const SENTINEL = "<promise>COMPLETE</promise>";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -24,6 +25,15 @@ interface TachikomaState {
   pid: number | null;
   iter: string | null;
   lastProgress: string | null;
+}
+
+interface DrainWorker {
+  id: number;
+  logPath: string;
+  logAgeSeconds: number;
+  stateFileExists: boolean;
+  likelyState: "halted-early" | "had-state" | "stale";
+  lastLogTail: string | null;
 }
 
 interface WorkRequest {
@@ -125,6 +135,45 @@ function readTachikomaState(wtPath: string): Pick<TachikomaState, "status" | "pi
   }
 
   return { status, pid, iter, lastProgress };
+}
+
+function detectDrainWorkers(): DrainWorker[] {
+  if (!existsSync(TACHIKOMA_RUNTIME_DIR)) return [];
+  const now = Date.now();
+  const workers: DrainWorker[] = [];
+
+  for (const entry of readdirSync(TACHIKOMA_RUNTIME_DIR)) {
+    const m = entry.match(/^drain-worker-(\d+)\.log$/);
+    if (!m) continue;
+    const id = parseInt(m[1]);
+    const logPath = join(TACHIKOMA_RUNTIME_DIR, entry);
+    const stateFile = join(TACHIKOMA_RUNTIME_DIR, `queue-drain.state.${id}`);
+    const stateFileExists = existsSync(stateFile);
+
+    let logAgeSeconds = -1;
+    let lastLogTail: string | null = null;
+    try {
+      const st = statSync(logPath);
+      logAgeSeconds = Math.floor((now - st.mtimeMs) / 1000);
+      const content = readFileSync(logPath, "utf8").trim();
+      if (content) {
+        const lines = content.split("\n");
+        lastLogTail = lines.slice(-3).join(" / ").slice(0, 240);
+      }
+    } catch { /* ignore */ }
+
+    // Heuristic: state file absent + log >5min old → worker halted before it could
+    // grab a slice. State file present → worker progressed past auto-grab.
+    // No state + log <5min old → recently spawned, possibly still alive.
+    let likelyState: DrainWorker["likelyState"];
+    if (stateFileExists) likelyState = "had-state";
+    else if (logAgeSeconds > 300) likelyState = "halted-early";
+    else likelyState = "stale";
+
+    workers.push({ id, logPath, logAgeSeconds, stateFileExists, likelyState, lastLogTail });
+  }
+
+  return workers.sort((a, b) => a.id - b.id);
 }
 
 function tachikomaStatus(): TachikomaState[] {
@@ -236,6 +285,19 @@ function renderTemplate(tmpl: string, vars: Record<string, string>): string {
   return Object.entries(vars).reduce((s, [k, v]) => s.replaceAll(`{{${k}}}`, v), tmpl);
 }
 
+function parseTachikomaConf(): Record<string, string> {
+  const confPath = join(HOME, ".claude", "tachikoma.conf");
+  if (!existsSync(confPath)) return {};
+  const conf: Record<string, string> = {};
+  for (const line of readFileSync(confPath, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+    const idx = trimmed.indexOf("=");
+    conf[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
+  }
+  return conf;
+}
+
 function synthesizePrd(wr: WorkRequest): object {
   const numbered = wr.stopCondition.split("\n").filter(l => /^\d+\./.test(l.trim()));
   const items = numbered.length
@@ -329,11 +391,14 @@ async function tachikomaDispatch(
   // Render templates
   const feedback = detectFeedbackLoops(next.targetRepo);
   const allowedTools = buildAllowedTools(feedback);
+  const conf = parseTachikomaConf();
+  const model = conf.model ?? "";
+  const plannerModel = conf.planner_model ?? "";
 
   const tachikomaShPath = join(tachikomaDir, "tachikoma.sh");
   writeFileSync(tachikomaShPath, renderTemplate(
     readFileSync(join(TACHIKOMA_SKILLS_DIR, "tachikoma.sh.tmpl"), "utf8"),
-    { REPO_PATH: worktreePath, SENTINEL, ALLOWED_TOOLS: allowedTools }
+    { REPO_PATH: worktreePath, SENTINEL, ALLOWED_TOOLS: allowedTools, MODEL: model, PLANNER_MODEL: plannerModel }
   ));
   chmodSync(tachikomaShPath, "755");
 
@@ -388,7 +453,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "tachikoma_status",
-      description: "List all Tachikoma worktrees across ~/projects/ with status, PID liveness, iteration progress, and last progress note.",
+      description: "List Tachikoma worktrees across ~/projects/ (with status, PID liveness, iteration progress, last progress note) AND queue-drain workers detected via ~/.tachikoma/drain-worker-N.log files. Returns an object {worktrees, drainWorkers} so callers see drain workers even when they halted before any worktree was created.",
       inputSchema: { type: "object" as const, properties: {} },
     },
     {
@@ -410,13 +475,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   if (name === "tachikoma_status") {
-    const result = tachikomaStatus();
+    const worktrees = tachikomaStatus();
+    const drainWorkers = detectDrainWorkers();
+    if (worktrees.length === 0 && drainWorkers.length === 0) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "No Tachikoma worktrees under ~/projects/ and no drain workers in ~/.tachikoma/.",
+        }],
+      };
+    }
     return {
       content: [{
         type: "text" as const,
-        text: result.length === 0
-          ? "No Tachikoma worktrees found under ~/projects/."
-          : JSON.stringify(result, null, 2),
+        text: JSON.stringify({ worktrees, drainWorkers }, null, 2),
       }],
     };
   }
