@@ -35,7 +35,8 @@ Throughout this skill: `MAIN_REPO` = main worktree path, `WORKTREE_PATH` = the n
 | `/tachikoma resume` (optionally `<slug>`) | **Explicit entry point** for recover phase — re-launch a previously interrupted loop. With `<slug>`, picks that specific worktree; otherwise picker if multiple recoverable. |
 | `/tachikoma status` (alias `/tachikoma t`, optionally `<slug>`) | Telemetry. With no args: compact summary table across all tachikoma worktrees in this repo. With `<slug>`: drill into that specific loop (PID liveness, iter, last milestone, log tail). Read-only. |
 | `/tachikoma stop` (optionally `<slug>` or `--all`) | SIGTERM. Cwd-implicit if cwd is itself a tachikoma worktree. Picker if >1 running. `--all` halts every running tachikoma in the repo. |
-| `/tachikoma queue` (optionally `<slug>`) | Drain the work-request queue with a single worker — full Phases 1–6 per item, batch preferences set once up front. The worker pulls the next `open` item from the shared queue and processes it; when done, pulls the next; repeats until the queue is empty (or until SIGTERM'd via `queue stop`). With `<slug>`: run a single specific queue item. With `--caffeinated` (alias `-C`): prevent macOS sleep for the entire session by wrapping each item's launch with `caffeinate -d`. |
+| `/tachikoma queue` | **Auto-grab from PROXY.** Calls `lib/queue-grab.sh` → `proxy queue grab` to atomically claim the next ready slice. If a slug is returned: proceeds with the full single-item lifecycle (Phases 1–6) as if the user typed `/tachikoma queue <slug>`. If the queue is empty or nothing is ready: prints `"Nothing to grab. Add an Epic with \`proxy queue add-epic\` or create work-requests."` and exits cleanly (exit 0). Only grabs `open` slices — slices already in `grabbed` state are never re-grabbed. |
+| `/tachikoma queue <slug>` | **Manual override.** Run a single specific work-request by slug (full Phases 1–6). Skips auto-grab; looks up the work-request directly. Use when you know the exact slug you want to run. |
 | `/tachikoma queue <N>` | **Parallel drain — launches N background workers.** Each worker is independent and pulls the next `open` item from the same shared file-based queue. They naturally partition the queue via the atomic `open` → `grabbed` status flip in each work-request's frontmatter. Each worker writes its own state file at `~/.tachikoma/queue-drain.state.<worker-id>` (so `/tachikoma sitrep` can report on all of them). `N` must be an integer ≥ 2; for a single drain use the bare `/tachikoma queue`. `--caffeinated`/`-C` applies to all workers. Batch preferences are collected once in the foreground before any worker is spawned, written to `~/.claude/tachikoma.conf` so background workers read them silently. |
 | `/tachikoma queue <repo>` | Queue-drain mode sourced from GitHub. Fetches all `ready-for-agent AND NOT agent-running` issues from `<repo>` (format: `org/repo`), auto-creates linked work_requests for any without one, then runs the normal queue drain (Phases 1–6 per item). Ends with a HITL notification when no `ready-for-agent` issues remain. Combinable with `<N>` (e.g. `/tachikoma queue MioMarker/healthbite 3`) to drain a GitHub-sourced queue with N parallel workers. |
 | `/tachikoma queue add` | Create a new work-request (delegates to `/work-queue add`). |
@@ -907,18 +908,40 @@ Keep one row per loop, ≤80 chars wide. Don't print log tails or progress notes
 
 For `--all`: send SIGTERM to all in parallel; wait up to 60s for all; SIGKILL stragglers.
 
-## Subcommand: `/tachikoma queue` (queue-drain mode)
+## Subcommand: `/tachikoma queue` (queue mode)
 
-Drains the work-request queue by running a full tachikoma lifecycle (Phases 1–6) per item. A drain is **one worker that pulls the next `open` item from the shared queue, processes it to completion, then pulls the next**. Designed for long unattended sessions. Each item gets its own worktree, branch, and PR. Built to keep moving — failures are logged and skipped, never block the queue.
+Runs one work-request item through the full tachikoma lifecycle (Phases 1–6). Each item gets its own worktree, branch, and PR.
 
-**`--caffeinated` flag (alias `-C`):** When passed, prevents macOS from sleeping during the drain by wrapping each item's `--once` launch with `caffeinate -d`. Recommended for AFK overnight runs. Can also be set interactively via the batch preferences question (see Step 1). Without this flag the system may sleep mid-drain and stall the loop.
+**No-arg form** (`/tachikoma queue`): auto-grabs the next ready slice from the PROXY queue via `lib/queue-grab.sh` → `proxy queue grab`. If the queue is empty or nothing is ready, prints a clear message and exits. If a slug is returned, proceeds with the single-item lifecycle exactly as the slug form does.
+
+**Slug form** (`/tachikoma queue <slug>`): manual override — skips auto-grab and processes the named work-request directly. Use when you already know which slice to run.
+
+**`--caffeinated` flag (alias `-C`):** Prevents macOS from sleeping during the run by wrapping the item's `--once` launch with `caffeinate -d`. Recommended for long unattended runs.
 
 ### Worker model
 
-The queue is **file-based and shared**: every drain reads the same directory of `.md` work-requests. Coordination is the atomic `open` → `grabbed` → `done` status flip in each work-request's frontmatter — workers naturally partition the queue by claiming items they grab.
+The queue is backed by **PROXY's Postgres-persisted queue** (QUEUE.yaml + DB). `proxy queue grab` atomically claims the next ready slice (`open` → `grabbed` CAS update) so concurrent workers never grab the same item.
 
-- **`/tachikoma queue`** — single foreground worker in the current session. The agent is the orchestrator; the session is tied up for the duration.
-- **`/tachikoma queue <N>`** (N ≥ 2) — launches N **background** workers, each a detached `claude -p "/tachikoma queue"` process. The foreground session collects batch preferences once (writes them to `~/.claude/tachikoma.conf` so the background workers can read them silently), then spawns the N workers and exits. Each worker grabs items independently; throughput scales roughly linearly with N.
+- **`/tachikoma queue`** — single foreground worker. Claims one item via `proxy queue grab`, runs it, exits.
+- **`/tachikoma queue <N>`** (N ≥ 2) — launches N **background** workers, each a detached `claude -p "/tachikoma queue"` process. The foreground session collects batch preferences once (writes them to `~/.claude/tachikoma.conf` so the background workers can read them silently), then spawns the N workers and exits. Each worker calls `proxy queue grab` independently; because the grab is atomic, workers naturally partition the queue without collision.
+
+### Step 0a — Auto-grab from PROXY (no-arg form only)
+
+When `/tachikoma queue` is invoked **without a slug argument**, execute Step 0a before anything else:
+
+1. Locate `lib/queue-grab.sh` at `~/.claude/skills/tachikoma/lib/queue-grab.sh` (the skill install dir).
+2. Run it and capture stdout:
+   ```bash
+   SLUG="$(~/.claude/skills/tachikoma/lib/queue-grab.sh)"
+   ```
+3. If the script exits **non-zero**: surface the error message from stderr and abort. Do not continue.
+4. If `SLUG` is **empty** (exit 0): print the following and exit 0 — no error:
+   ```
+   Nothing to grab. Add an Epic with `proxy queue add-epic` or create work-requests.
+   ```
+5. If `SLUG` is **non-empty**: proceed to Step 0 (session recovery) as if the user had typed `/tachikoma queue <slug>`.
+
+When `/tachikoma queue <slug>` is invoked, skip Step 0a entirely — `SLUG` is already known.
 
 **Multi-worker launch shape** (one per worker, `i` = 1..N):
 
@@ -940,11 +963,11 @@ Stop all:     /tachikoma queue stop --all
 ```
 
 **Validation:**
-- `N` must be an integer ≥ 2. `queue 1` errors with: `→ Use bare /tachikoma queue for a single drain.`
-- Refuse if any precondition (1–7) fails — same rules as the single-drain form.
+- `N` must be an integer ≥ 2. `queue 1` errors with: `→ Use bare /tachikoma queue for a single auto-grab.`
+- Refuse if any precondition (1–7) fails — same rules as the single form.
 - If `~/.claude/tachikoma.conf` is missing required batch prefs, collect them interactively in the foreground before spawning any worker. The user answers once, all workers inherit.
 
-**Race-condition note:** the `open` → `grabbed` flip is a read-modify-write on the markdown frontmatter, not a true atomic op. The window where two workers could grab the same item is small (sub-second per item, occurring only when both happen to read the queue at the same instant) but not zero. In practice this is rare enough to ignore; if it bites, the second worker will see `status: grabbed` on its post-flip re-read and can roll back. (Future hardening: switch to a sqlite-backed queue or use `flock(2)` on the work-request file during the flip.)
+**Race-condition note:** `proxy queue grab` performs a CAS UPDATE (`open` → `grabbed`) inside Postgres — the claim is atomically safe across concurrent workers. No file-level locking is needed.
 
 **Work-request directory:** `~/projects/personal-nix/wiki/work-requests/*.md`
 

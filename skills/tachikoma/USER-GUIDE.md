@@ -272,31 +272,40 @@ Auto-retry logic:
 
 The queue is a folder of markdown files (`~/projects/personal-nix/wiki/work-requests/`). Each file is a structured task with frontmatter (`status`, `target_repo`, `github_issue`, `failure_count`).
 
-### Drain the queue
+### Grab from the PROXY queue
 
-**Mental model: a "drain" is one worker against the shared queue.** It pops the next `open` work-request, runs the full lifecycle on it in its own worktree, then pops the next. Repeats until the queue is empty or you stop it. The queue itself is the folder of markdown files — there's no central process owning it.
-
-You can run **multiple workers in parallel** — they share the queue and partition the work via the atomic `open` → `grabbed` status flip on each file. Same model as a worker pool draining a job queue.
+**Mental model: `tachikoma queue` (no args) grabs ONE slice from the PROXY queue.** It calls `proxy queue grab` to atomically claim the next ready `open` slice, runs the full lifecycle on it in its own worktree, and exits. Call it again to grab the next one. The queue is PROXY-managed — `QUEUE.yaml` + Postgres, ordered by priority within each Epic.
 
 ```
-/tachikoma queue                  # 1 worker, foreground in this session
-/tachikoma queue 3                # 3 background workers — overnight throughput
-/tachikoma queue <slug>           # run one specific item (single worker)
-/tachikoma queue --caffeinated    # prevent macOS sleep (good for overnight runs)
+/tachikoma queue                  # grab next ready slice from PROXY, run it
+/tachikoma queue <slug>           # run a specific slice by slug (manual override)
+/tachikoma queue --caffeinated    # prevent macOS sleep during the run
 /tachikoma queue -C               # alias for --caffeinated
+/tachikoma queue 3                # 3 background workers — each grabs its own slice
 /tachikoma queue 3 -C             # 3 workers + sleep prevention (typical AFK launch)
 ```
 
-Each item gets its own worktree, branch, and PR — the full preflight → scaffold → launch → ship lifecycle per item. Failures are logged and skipped — the queue keeps moving.
+**If the queue is empty** (no `open` slices, or all remaining candidates are blocked/paused):
+```
+Nothing to grab. Add an Epic with `proxy queue add-epic` or create work-requests.
+```
 
-Queue drain runs items with `--once` mode (sequential, foreground) regardless of your `iteration_mode` config. With `queue N` the foreground session collects your batch preferences once, writes them to `~/.claude/tachikoma.conf`, then spawns N detached `claude -p "/tachikoma queue"` workers and exits.
+**If a slice is grabbed**, the full lifecycle runs: preflight → scaffold → launch → ship. The slice gets its own worktree, branch, and PR.
+
+**Invoking three times** drains a three-slice Epic:
+```
+/tachikoma queue   # grabs slice-1
+/tachikoma queue   # grabs slice-2
+/tachikoma queue   # grabs slice-3
+/tachikoma queue   # queue empty — prints message and exits
+```
+
+With `queue N` (N ≥ 2): the foreground session collects batch preferences once, writes them to `~/.claude/tachikoma.conf`, then spawns N detached `claude -p "/tachikoma queue"` workers and exits. Each worker calls `proxy queue grab` independently; the Postgres CAS ensures no two workers claim the same slice.
 
 **Sizing N:**
-- `queue` (no N) — keep up with reviews in near-real-time.
-- `queue 2`–`queue 3` — typical overnight throughput; balances API rate limits with review backlog the next morning.
-- `queue 5+` — high risk of hitting Anthropic per-minute caps; do this only if you have a dedicated review session planned and your tier supports it.
-
-Workers compete on a single shared file-based queue. The race window between two workers grabbing the same item is small but non-zero — see the SKILL spec for hardening notes.
+- `queue` (no N) — one slice at a time; keep up with reviews in near-real-time.
+- `queue 2`–`queue 3` — typical overnight throughput; balances API rate limits with review backlog.
+- `queue 5+` — high risk of hitting Anthropic per-minute rate caps; only if your tier supports it.
 
 ### Managing the queue
 
