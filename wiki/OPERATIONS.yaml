@@ -4,16 +4,19 @@
 # Edit directly OR use `proxy op {new, mv, priority, state, snooze}` CLI.
 # Daemon watches this file via `notify` crate and syncs to DB on change.
 #
-# Schema:
-#   theaters:
-#     - theater: <name>
-#       ops:
-#         - <slug>   # ordered; index 0 = highest priority within theater
+# Schema — top-level map from theater name to ordered Op list. Each entry is an
+# object with a `slug:` key. Theater order is alphabetical (BTreeMap); position
+# inside a theater is the index in the list (0 = highest priority).
+#
+# Empty theater:
+#   relymd: []
+#
+# Theater with Ops:
+#   relymd:
+#     - slug: platform-stability
+#     - slug: auth-rewrite
 #
 # Op metadata (priority, status, title) lives in operations/<slug>.md frontmatter.
 # This file owns ordering + theater membership only.
 
-theaters:
-  - theater: relymd
-    ops:
-      - relymd-q2-platform-stability
+relymd: []
