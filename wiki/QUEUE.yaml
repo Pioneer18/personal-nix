@@ -1,11 +1,4 @@
 queue:
-- epic: queue-infrastructure-v1-completion
-  title: Queue + Epic infrastructure — completion
-  goal: 'Complete partial-shipped parts of proxy-27/28/29 (PRs #48/49/50): watcher + sync + CLI subcommands (27b), web UI routes + components + drag-reorder (28b), Tachikoma no-arg auto-grab wiring (29b). Closes the ergonomic loop opened by ADR 006.'
-  slices:
-  - proxy-27b-queue-watcher-sync-cli
-  - proxy-28b-queue-web-ui-pages
-  - proxy-29b-tachikoma-queue-no-arg-wiring
 - standalone: proxy-work-request-dispatch-button
 - epic: email-vertical
   title: Email management vertical
@@ -76,5 +69,5 @@ queue:
 - standalone: proxy-work-request-pr-link
 - standalone: major-plan-001-stream-e-tests
 - standalone: major-stream-d-shellid-wiring
-- standalone: proxy-github-issues-integration
 - standalone: proxy-jira-bidirectional-sync
+- standalone: tachikoma-skill-routes-through-proxy-dispatch
