@@ -496,6 +496,7 @@ The `agent-running` label is the distributed claim signal. A concurrent Tachikom
      - `{{ISSUE_LABEL_BLOCK}}` — for issue-linked runs: the Step 6 label-update instructions (`gh issue edit ... --add-label ready-for-review --remove-label agent-running`); empty for local/remote
      - `{{ISSUE_CLOSE_BLOCK}}` — for `--issue` mode: the Step 7 close-issue instructions; empty otherwise
    - The PR body is no longer a placeholder — `ship.md.tmpl` references `.tachikoma/ship_body.txt` via `--body-file`, so no escaping is required.
+   - **Both `ship.md` and `ship_body.txt` must exist on disk before launch** — `tachikoma.sh`'s auto-ship check (`if [ -f "$SHIP_PROMPT_FILE" ]`) silently skips ship when missing, leaving the work committed but unmerged. Automated scaffolders (e.g. the `tachikoma_dispatch` MCP tool in `mcps/tachikoma-mcp/index.ts`) must render these alongside `prompt.md`; regression covered by `skills/tachikoma/tests/test-scaffold.sh`.
    - In **local** mode only: write `<WORKTREE_PATH>/plans/prd.json`.
 
 6. **Commit the scaffolding inside the worktree** so the loop's first iteration has a clean tree. Use `git -C <WORKTREE_PATH>`:

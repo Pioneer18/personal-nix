@@ -421,6 +421,34 @@ async function tachikomaDispatch(
     }
   ));
 
+  // Render .tachikoma/ship.md so the auto-ship path in tachikoma.sh fires on
+  // <promise>COMPLETE</promise>. Without this the runtime check at
+  // tachikoma.sh.tmpl:382 always falls through to "ship.md not found".
+  const goalFirstLine = next.goal.split("\n")[0].trim().slice(0, 100);
+  const prTitle = goalFirstLine || next.slug;
+  writeFileSync(join(tachikomaDir, "ship.md"), renderTemplate(
+    readFileSync(join(TACHIKOMA_SKILLS_DIR, "ship.md.tmpl"), "utf8"),
+    {
+      WORKTREE_PATH: worktreePath,
+      TACHIKOMA_BRANCH: branch,
+      BASE_BRANCH: baseBranch,
+      PR_TARGET_BRANCH: baseBranch,
+      SLUG: next.slug,
+      REPO_OWNER_NAME: "",
+      GITHUB_ISSUE_LINE: "",
+      COMMIT_MESSAGE: `${prTitle} [${next.slug}]`,
+      PR_TITLE: prTitle,
+      ISSUE_LABEL_BLOCK: "",
+      ISSUE_CLOSE_BLOCK: "",
+    }
+  ));
+
+  // ship.md references .tachikoma/ship_body.txt via `gh pr create --body-file`.
+  writeFileSync(
+    join(tachikomaDir, "ship_body.txt"),
+    `Tachikoma run for \`${next.slug}\`.\n\n${next.goal}\n`,
+  );
+
   // Write PRD + commit scaffold
   const plansDir = join(worktreePath, "plans");
   mkdirSync(plansDir, { recursive: true });

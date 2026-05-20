@@ -1,10 +1,13 @@
 ---
-status: open
+status: done
 type: epic
 target_repo: ~/Projects/tachikoma-starter
-last_updated: 2026-05-17
+last_updated: 2026-05-18
+closed_on: 2026-05-18
 quality_bar: production
 ---
+
+> **CLOSED 2026-05-18.** All 30 child slices shipped + 6 follow-up gap-fix slices (v2-08-spawn, v2-30, v2-31, v2-32, v2-33, v2-34) landed. End-to-end v2 5ECH lifecycle works across CLI, `/tachikoma queue` skill, and web UI. Per-callsign Claude + Codex prompt addenda seeded; bilingual loop image active; clearance hard gate enforces via filesystem mount + `--allowed-tools` + bash-restricted shim. User guide at `~/Projects/tachikoma-starter/docs/v2-5ech-user-guide.md` (PR #161). Parked intentionally: v1→v2 historical data transform (live work goes through dossiers; legacy `work_requests` rows stay readable), CLI face art rendering (cosmetic — TUI + Web render art correctly).
 
 # PROXY v2 — 5ECH operative-model theme overhaul (EPIC)
 
