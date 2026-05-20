@@ -1,4 +1,7 @@
 queue:
+- standalone: tachikoma-skill-ship-md-template-missing
+- standalone: tachikoma-skill-clippy-gate-out-of-scope
+- standalone: tachikoma-skill-turbo-missing-in-worktree
 - epic: email-reviewer-v2
   title: Email Reviewer V2 — Outlook-parity nav + action cards + draft reply
   goal: Replace urgency-pivot list with folder/Focused/Other nav, shape-aware action cards, Claude-drafted reply, bulk select, and full-text Outlook search. Grilled 2026-05-20. Dependency order — 01→(02∥04)→03→(05∥06).
@@ -10,8 +13,6 @@ queue:
   title: PROXY v2 — 5ECH operative-model theme overhaul
   goal: 'Transform PROXY''s BMO-themed v1 work-orchestrator into a Splinter-Cell-styled operative section. 4 callsigns (Tracer / Quill / Phantom / Echo) on 2×2 matrix (Comms × Trust) with 3 runner knobs each (prompt addendum + pause_on + emit_cadence). 5-level clearance (read/patch/commit/push/execute). 7-state lifecycle (BRIEFED/LIVE/STANDBY/EXFIL_RDY/EXFIL''D/BURNED/RECALLED) with DARK computed. Full vocab swap top-to-bottom (work_requests→dossiers, runs→inserts, feed_items→comms_events, pending_approvals→standby_requests). 12-verb CLI surface. Typed package (pr/report/patch/mixed) + untyped dead drops. Hybrid kaomoji + per-callsign big-ASCII-art faces. Hey PROXY wake-word retained; command-mode added; per-proxy macOS TTS voices. Substrate (daemon, voice, sensor, admission, Docker runner, MCP) preserved. Clean cutover + light data import of open v1 work-requests. Computer use (formerly v2.0 per ADR 003) renumbered to v3.0. Epic doc: work-requests/proxy-v2-5ech-epic.md. Decision doc: decisions/proxy-v2-5ech-theme-overhaul.md. 21 design lockdowns captured 2026-05-14 grilling session.'
   slices:
-  - proxy-v2-22-provider-schema
-  - proxy-v2-26-admission-gate-5
   - proxy-v2-27-chat-tab-bilingual
   - proxy-v2-infil-cli-completion
 - standalone: major-plan-001-stream-e-tests
