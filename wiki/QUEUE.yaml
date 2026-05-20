@@ -1,5 +1,5 @@
 queue:
-- standalone: proxy-loop-image-version-pins-stale
+- standalone: proxy-spawn-engine-env-injection-missing
 - standalone: tachikoma-skill-ship-md-template-missing
 - standalone: tachikoma-skill-clippy-gate-out-of-scope
 - standalone: tachikoma-skill-turbo-missing-in-worktree
