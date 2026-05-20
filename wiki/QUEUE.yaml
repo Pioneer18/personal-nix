@@ -1,10 +1,12 @@
 queue:
+- standalone: proxy-loop-image-version-pins-stale
 - standalone: tachikoma-skill-ship-md-template-missing
 - standalone: tachikoma-skill-clippy-gate-out-of-scope
 - standalone: tachikoma-skill-turbo-missing-in-worktree
 - epic: email-reviewer-v2
   title: Email Reviewer V2 — Outlook-parity nav + action cards + draft reply
   goal: Replace urgency-pivot list with folder/Focused/Other nav, shape-aware action cards, Claude-drafted reply, bulk select, and full-text Outlook search. Grilled 2026-05-20. Dependency order — 01→(02∥04)→03→(05∥06).
+  paused: true
   slices:
   - proxy-erv2-03
   - proxy-erv2-05
