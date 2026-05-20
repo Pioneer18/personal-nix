@@ -18,7 +18,7 @@
       "description": "A tachikoma loop that emits `<promise>COMPLETE</promise>` auto-pushes its branch + opens a draft PR (or whatever the templated `ship.md` instructs the inner `claude -p` to do) without manual intervention. The `.tachikoma/ship.md` file must exist at scaffold time so the runtime path at `tachikoma.sh.tmpl:391` actually fires.",
       "steps": [],
       "blocked_by": [],
-      "passes": false
+      "passes": true
     }
   ]
 }
