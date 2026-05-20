@@ -1,73 +1,20 @@
 queue:
-- standalone: proxy-work-request-dispatch-button
-- epic: email-vertical
-  title: Email management vertical
-  goal: Inbox triage + Reviewer + iterative compose for RelyMD Outlook (ADR 005). Structural mode first; body-mode flag flipped post-BAA.
+- epic: email-reviewer-v2
+  title: Email Reviewer V2 — Outlook-parity nav + action cards + draft reply
+  goal: Replace urgency-pivot list with folder/Focused/Other nav, shape-aware action cards, Claude-drafted reply, bulk select, and full-text Outlook search. Grilled 2026-05-20. Dependency order — 01→(02∥04)→03→(05∥06).
   slices:
-  - proxy-19-outlook-msgraph-auth
-  - proxy-20-email-briefing-engine
-  - proxy-21-email-folder-taxonomy
-  - proxy-22-email-reviewer-ux
-  - proxy-23-email-iterative-compose
-  - proxy-24-email-body-flag-mechanism
-  - proxy-25-email-jira-from-briefing
-  - proxy-26-email-calendar-conflict
-- standalone: proxy-tui-face-redesign
-- epic: operations-and-objectives
-  title: Operations + Objectives + Follow-ups (North Star)
-  goal: Director-level workstream substrate (ADR 007). Operation as the named container above Epics; Objectives link to Epic/Jira/Briefing/Draft/∅; Follow-ups carry remind_at + recur. AI triage on capture (pgvector dedup + priority suggest); 6-hour proactive engine (stale + can-start drafts + recur fires); TUI 6-region North Star pane; web Op-dashboard; /op /op-grill /op-next skills. Depends on queue-infrastructure-v1-completion.
-  slices:
-  - proxy-30-operations-core
-  - proxy-31-operations-triage-engine
-  - proxy-32-operations-proactive-engine
-  - proxy-33-operations-skills
-  - proxy-34-operations-tui
-  - proxy-35-operations-web
-  - proxy-36-operations-notebook-migration
+  - proxy-erv2-03
+  - proxy-erv2-05
+  - proxy-erv2-06
 - epic: proxy-v2-5ech
   title: PROXY v2 — 5ECH operative-model theme overhaul
   goal: 'Transform PROXY''s BMO-themed v1 work-orchestrator into a Splinter-Cell-styled operative section. 4 callsigns (Tracer / Quill / Phantom / Echo) on 2×2 matrix (Comms × Trust) with 3 runner knobs each (prompt addendum + pause_on + emit_cadence). 5-level clearance (read/patch/commit/push/execute). 7-state lifecycle (BRIEFED/LIVE/STANDBY/EXFIL_RDY/EXFIL''D/BURNED/RECALLED) with DARK computed. Full vocab swap top-to-bottom (work_requests→dossiers, runs→inserts, feed_items→comms_events, pending_approvals→standby_requests). 12-verb CLI surface. Typed package (pr/report/patch/mixed) + untyped dead drops. Hybrid kaomoji + per-callsign big-ASCII-art faces. Hey PROXY wake-word retained; command-mode added; per-proxy macOS TTS voices. Substrate (daemon, voice, sensor, admission, Docker runner, MCP) preserved. Clean cutover + light data import of open v1 work-requests. Computer use (formerly v2.0 per ADR 003) renumbered to v3.0. Epic doc: work-requests/proxy-v2-5ech-epic.md. Decision doc: decisions/proxy-v2-5ech-theme-overhaul.md. 21 design lockdowns captured 2026-05-14 grilling session.'
   slices:
-  - proxy-v2-01-schema-migration
-  - proxy-v2-02-data-migration
-  - proxy-v2-03-wiki-import
-  - proxy-v2-04-presets-seed
-  - proxy-v2-05-runner-branching
-  - proxy-v2-06-standby-flow
-  - proxy-v2-07-exfil-flow
-  - proxy-v2-08-cli-dossier-verbs
-  - proxy-v2-09-cli-runtime-verbs
-  - proxy-v2-10-cli-terminal-verbs
-  - proxy-v2-11-face-assets-small
-  - proxy-v2-12-face-assets-big
-  - proxy-v2-13-face-rendering
-  - proxy-v2-14-voice-command-mode
-  - proxy-v2-15-voice-tts-routing
-  - proxy-v2-16-tui-section-grid
-  - proxy-v2-17-web-section-grid
-  - proxy-v2-18-skill-rename
-  - proxy-v2-19-architecture-v4
-  - proxy-v2-20-claude-md-update
-  - proxy-v2-21-adr-005
   - proxy-v2-22-provider-schema
-  - proxy-v2-23-provider-trait
-  - proxy-v2-24-loop-image-bilingual
-  - proxy-v2-25-env-auth-injection
   - proxy-v2-26-admission-gate-5
   - proxy-v2-27-chat-tab-bilingual
-  - proxy-v2-28-cli-provider-verbs
-  - proxy-v2-29-presets-codex-addendum
-- standalone: create-work-request-skill
-- standalone: cron-system
-- standalone: fix-tachikoma-dispatch-bugs
-- standalone: foundry-integration-adr
-- standalone: grill-to-epic-skill
-- standalone: nix-manage-proxy-daemon-and-cli
-- standalone: proxy-timer-system
-- standalone: reorient-skill
-- standalone: web-container-daemon-host-reach
-- standalone: proxy-work-request-pr-link
+  - proxy-v2-infil-cli-completion
 - standalone: major-plan-001-stream-e-tests
 - standalone: major-stream-d-shellid-wiring
-- standalone: proxy-jira-bidirectional-sync
+- standalone: foundry-integration-adr
 - standalone: tachikoma-skill-routes-through-proxy-dispatch
