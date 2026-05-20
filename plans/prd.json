@@ -1,36 +1,24 @@
 {
-  "goal": "Declare the Tachikoma UI as a launchd user agent in default.nix so it auto-starts on login at localhost:4000",
-  "quality_bar": "prototype",
-  "files_in_scope": ["default.nix"],
-  "files_out_of_scope": ["mcp.nix", "packages.nix", "flake.nix", "flake.lock", "mcps/**"],
-  "tasks": [
+  "goal": "A tachikoma loop that emits `<promise>COMPLETE</promise>` auto-pushes its branch + opens a draft PR (or whatever the templated `ship.md` instructs the inner `claude -p` to do) without manual intervention. The `.tachikoma/ship.md` file must exist at scaffold time so the runtime path at `tachikoma.sh.tmpl:391` actually fires.",
+  "quality_bar": "production",
+  "files_in_scope": [
+    "``skills/tachikoma/tachikoma.sh.tmpl` — add the `ship.md.tmpl` → `.tachikoma/ship.md` rendering step at scaffold time (next to where `prompt.md` is rendered)",
+    "``skills/tachikoma/lib/scaffold.sh` (if separate) — same place that templates `prompt.md",
+    "``skills/tachikoma/SKILL.md` — note the scaffold step in the skill's flow"
+  ],
+  "files_out_of_scope": [
+    "`Changing what `ship.md` actually instructs the inner Claude to do (the current content is fine; only the rendering is missing)",
+    "`Reworking the COMPLETE sentinel detection itself"
+  ],
+  "stop_condition": "- [ ] A fresh `tachikoma_dispatch` scaffold leaves a rendered `$WORKTREE/.tachikoma/ship.md` on disk before the loop starts\n- [ ] Any placeholders in `ship.md.tmpl` (e.g. `{{BRANCH}}`, `{{SLUG}}`) are substituted using the same template engine that handles `prompt.md.tmpl`\n- [ ] A tachikoma that hits `<promise>COMPLETE</promise>` no longer prints `[ship] ship.md not found` — auto-ship attempts to run\n- [ ] Regression test: `bash skills/tachikoma/tests/test-scaffold.sh` (or new test) asserts `.tachikoma/ship.md` exists post-scaffold\n- [ ] Manual verification — re-run a tachikoma that previously hit this bug and confirm auto-ship fires",
+  "items": [
     {
-      "id": "task-1",
-      "title": "Add home.activation.buildTachikomaUI to default.nix",
-      "status": "open",
-      "description": "Add activation step that runs npm install + npm run build in mcps/tachikoma-ui/, non-fatal on failure."
-    },
-    {
-      "id": "task-2",
-      "title": "Add home.activation.writeTachikomaUILauncher to default.nix",
-      "status": "open",
-      "description": "Add activation step that writes ~/.local/bin/tachikoma-ui-start: sources ~/.secrets, execs node --experimental-strip-types .../server/index.ts. chmod +x."
-    },
-    {
-      "id": "task-3",
-      "title": "Declare launchd.user.agents.tachikoma-ui in default.nix",
-      "status": "open",
-      "description": "Add launchd user agent with ProgramArguments pointing to the launcher script, RunAtLoad=true, KeepAlive=true, log paths at /tmp/tachikoma-ui.log."
-    },
-    {
-      "id": "task-4",
-      "title": "Verify nix eval --impure .#homeConfigurations exits without errors",
-      "status": "open",
-      "description": "Run: cd ~/projects/personal-nix && nix eval --impure .#homeConfigurations 2>&1 | head -40. Fix any nix syntax or attribute errors."
+      "id": "T-001",
+      "category": "functional",
+      "description": "A tachikoma loop that emits `<promise>COMPLETE</promise>` auto-pushes its branch + opens a draft PR (or whatever the templated `ship.md` instructs the inner `claude -p` to do) without manual intervention. The `.tachikoma/ship.md` file must exist at scaffold time so the runtime path at `tachikoma.sh.tmpl:391` actually fires.",
+      "steps": [],
+      "blocked_by": [],
+      "passes": false
     }
-  ],
-  "feedback_loops": [
-    "cd ~/projects/personal-nix && nix eval --impure .#homeConfigurations 2>&1 | head -40"
-  ],
-  "stop_condition": "All 4 tasks done and nix eval exits cleanly"
+  ]
 }
