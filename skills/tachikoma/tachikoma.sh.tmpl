@@ -329,8 +329,12 @@ for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
   # when last_heartbeat_at is older than 60s and lease_expires_at is null
   # or in the past. The v2 runner orchestrator was designed to refresh
   # this from a supervised loop container; tachikoma loops run natively,
-  # so we mirror the runner's behavior in-script. Lease is set to 5 min
-  # out so a brief stall between iterations doesn't flip to DARK.
+  # so we mirror the runner's behavior in-script. Lease is set to 30 min
+  # to cover slow iterations — the daemon's reaper kicks in once the
+  # lease expires regardless of subsequent heartbeats (RECALLED is
+  # terminal), so the lease must comfortably exceed worst-case iter
+  # wall-time. 5-min lease was too short and caused premature RECALLs
+  # on hard tasks.
   {
     hb_slug="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     hb_slug="${hb_slug#tachikoma/}"
@@ -338,7 +342,7 @@ for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
       docker exec -i proxy-postgres psql -U proxy -d proxy >/dev/null 2>&1 <<SQL || true
 UPDATE infils
    SET last_heartbeat_at = NOW(),
-       lease_expires_at  = NOW() + INTERVAL '5 minutes'
+       lease_expires_at  = NOW() + INTERVAL '30 minutes'
  WHERE state = 'LIVE'::infil_state
    AND dossier_id = (SELECT id FROM dossiers WHERE slug = '$hb_slug');
 SQL
