@@ -128,37 +128,40 @@ BASE_BRANCH="${BASE_BRANCH_VAL:-$(cat "$BASE_BRANCH_FILE")}"
 OUTCOME="unknown"
 ITER=0
 
-cleanup() {
-  rm -f "$PID_FILE" "$ITER_TMP"
-  echo "$OUTCOME" > "$OUTCOME_FILE"
-  # v2 transition: LIVE → EXFIL_RDY on clean completion. The runner
-  # orchestrator (proxy-v2-08) was supposed to own this when it watched
-  # the loop container exit, but tachikoma loops run natively (not in
-  # Docker), so the daemon never observes the sentinel. We close the
-  # loop ourselves via direct PG so the dashboard reflects "package
-  # ready for handler review." Idempotent: only flips rows in LIVE.
-  if [ "$OUTCOME" = "complete" ]; then
-    local reg_slug
-    reg_slug="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    reg_slug="${reg_slug#tachikoma/}"
-    if [ -n "$reg_slug" ] && command -v docker >/dev/null 2>&1; then
-      docker exec -i proxy-postgres psql -U proxy -d proxy -v ON_ERROR_STOP=1 >>"$LOG_FILE" 2>&1 <<SQL || true
+# LIVE → EXFIL_RDY transition helper. Called explicitly right after the
+# sentinel fires + verifier passes, while the worktree still exists.
+# Moved out of the EXIT trap because the ship phase below removes the
+# worktree (and the tachikoma branch) before exit, so `git rev-parse`
+# inside cleanup() cannot recover the slug. The runner orchestrator
+# (proxy-v2-08) was supposed to own this transition from a supervised
+# loop container, but tachikoma loops run natively. Idempotent: only
+# rows still in LIVE are flipped; an audit row goes into
+# infil_state_transitions (actor=tachikoma-loop). Best-effort — failures
+# log but never abort the ship phase.
+mark_infil_exfil_ready() {
+  local slug="$1"
+  [ -n "$slug" ] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  docker exec -i proxy-postgres psql -U proxy -d proxy -v ON_ERROR_STOP=1 >>"$LOG_FILE" 2>&1 <<SQL || true
 BEGIN;
 WITH bumped AS (
   UPDATE infils
      SET state = 'EXFIL_RDY'::infil_state
    WHERE state = 'LIVE'::infil_state
-     AND dossier_id = (SELECT id FROM dossiers WHERE slug = '$reg_slug')
+     AND dossier_id = (SELECT id FROM dossiers WHERE slug = '$slug')
   RETURNING id
 )
 INSERT INTO infil_state_transitions (infil_id, from_state, to_state, actor, metadata)
 SELECT id, 'LIVE', 'EXFIL_RDY', 'tachikoma-loop',
-       jsonb_build_object('verb','complete','source','tachikoma.sh','slug','$reg_slug')
+       jsonb_build_object('verb','complete','source','tachikoma.sh','slug','$slug')
   FROM bumped;
 COMMIT;
 SQL
-    fi
-  fi
+}
+
+cleanup() {
+  rm -f "$PID_FILE" "$ITER_TMP"
+  echo "$OUTCOME" > "$OUTCOME_FILE"
   notify "$OUTCOME" "$ITER"
 }
 
@@ -448,6 +451,12 @@ SQL
     fi
 
     if [ "${VERIFIER_PASSED:-0}" = "1" ]; then
+      # Flip LIVE → EXFIL_RDY now, before ship phase removes the worktree.
+      # The slug must come from the current branch while we still have one.
+      ship_slug="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+      ship_slug="${ship_slug#tachikoma/}"
+      mark_infil_exfil_ready "$ship_slug"
+
       if [ -f "$SHIP_PROMPT_FILE" ]; then
         {
           echo ""
