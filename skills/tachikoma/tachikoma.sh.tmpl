@@ -93,6 +93,26 @@ if [ -f "$PID_FILE" ]; then
 fi
 echo $$ > "$PID_FILE"
 
+# Self-register with PROXY v2 (dossier + infil rows). Defense-in-depth:
+# the orchestrator is expected to call `lib/spawn-v2.sh` in scaffold phase,
+# but parallel-launch paths and manual dispatch have skipped that step in
+# practice — leaving the dashboard blind. Re-running the registration here
+# is idempotent: brief tolerates already-exists, and the LIVE-per-dossier
+# unique index turns a duplicate infil into a silent skip. Failures are
+# logged but never abort the loop; observability isn't worth blocking real
+# work for.
+{
+  reg_slug="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  reg_slug="${reg_slug#tachikoma/}"
+  reg_wr="$HOME/projects/personal-nix/wiki/work-requests/$reg_slug.md"
+  if [ -n "$reg_slug" ] && [ -f "$reg_wr" ] && command -v proxy >/dev/null 2>&1; then
+    set +e
+    proxy brief "$reg_slug" --from-file "$reg_wr" >>"$LOG_FILE" 2>&1
+    proxy infil phantom --dossier "$reg_slug" >>"$LOG_FILE" 2>&1
+    set -e
+  fi
+} || true
+
 # Self-heal base_branch metadata if Phase 3 scaffold missed it.
 BASE_BRANCH_FILE="$REPO/.tachikoma/base_branch"
 if [ ! -f "$BASE_BRANCH_FILE" ]; then
@@ -111,6 +131,34 @@ ITER=0
 cleanup() {
   rm -f "$PID_FILE" "$ITER_TMP"
   echo "$OUTCOME" > "$OUTCOME_FILE"
+  # v2 transition: LIVE → EXFIL_RDY on clean completion. The runner
+  # orchestrator (proxy-v2-08) was supposed to own this when it watched
+  # the loop container exit, but tachikoma loops run natively (not in
+  # Docker), so the daemon never observes the sentinel. We close the
+  # loop ourselves via direct PG so the dashboard reflects "package
+  # ready for handler review." Idempotent: only flips rows in LIVE.
+  if [ "$OUTCOME" = "complete" ]; then
+    local reg_slug
+    reg_slug="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    reg_slug="${reg_slug#tachikoma/}"
+    if [ -n "$reg_slug" ] && command -v docker >/dev/null 2>&1; then
+      docker exec -i proxy-postgres psql -U proxy -d proxy -v ON_ERROR_STOP=1 >>"$LOG_FILE" 2>&1 <<SQL || true
+BEGIN;
+WITH bumped AS (
+  UPDATE infils
+     SET state = 'EXFIL_RDY'::infil_state
+   WHERE state = 'LIVE'::infil_state
+     AND dossier_id = (SELECT id FROM dossiers WHERE slug = '$reg_slug')
+  RETURNING id
+)
+INSERT INTO infil_state_transitions (infil_id, from_state, to_state, actor, metadata)
+SELECT id, 'LIVE', 'EXFIL_RDY', 'tachikoma-loop',
+       jsonb_build_object('verb','complete','source','tachikoma.sh','slug','$reg_slug')
+  FROM bumped;
+COMMIT;
+SQL
+    fi
+  fi
   notify "$OUTCOME" "$ITER"
 }
 
@@ -272,6 +320,27 @@ esac
 
 for ((ITER=1; ITER<=MAX_ITER; ITER++)); do
   echo "$RULE_ITER $ITER / $MAX_ITER ─────────────────────────────────────" | tee -a "$LOG_FILE"
+
+  # v2 heartbeat: keep the LIVE infil row visible on the dashboard.
+  # apps/web/src/lib/v2/state.ts::isDark flips state==LIVE to computed DARK
+  # when last_heartbeat_at is older than 60s and lease_expires_at is null
+  # or in the past. The v2 runner orchestrator was designed to refresh
+  # this from a supervised loop container; tachikoma loops run natively,
+  # so we mirror the runner's behavior in-script. Lease is set to 5 min
+  # out so a brief stall between iterations doesn't flip to DARK.
+  {
+    hb_slug="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    hb_slug="${hb_slug#tachikoma/}"
+    if [ -n "$hb_slug" ] && command -v docker >/dev/null 2>&1; then
+      docker exec -i proxy-postgres psql -U proxy -d proxy >/dev/null 2>&1 <<SQL || true
+UPDATE infils
+   SET last_heartbeat_at = NOW(),
+       lease_expires_at  = NOW() + INTERVAL '5 minutes'
+ WHERE state = 'LIVE'::infil_state
+   AND dossier_id = (SELECT id FROM dossiers WHERE slug = '$hb_slug');
+SQL
+    fi
+  } || true
 
   # Bail if TRACKED files are dirty at iteration start (real corruption).
   # Untracked-only state is a warning — a previous iter may have left a
