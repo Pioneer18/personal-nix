@@ -38,3 +38,7 @@ Jonathan is Engineering Program Lead (ApolloMD) + Senior Developer (RelyMD). He 
 - Board correctness is unit-tested (`skills/desk/tests`).
 - New skills or verbs extend the CLI first, then SKILL.md.
 - Possible later additions: GDEV ticket creation from delegate handoff, calendar-aware `/desk day`.
+
+## Multi-machine use (2026-10-08)
+
+Desk runs on both Macs. The CLI commits locally and never pulls, and the 18:00 job only pushes. Task IDs are assigned locally, so if both copies change without a sync, the IDs collide and the push fails. **Manual rule:** before you switch machines, run `/desk push` on the machine you are leaving. On the machine you go to, run `git -C ~/projects/desk pull` before you capture anything. Possible later fix: the CLI pulls with rebase before each write and pushes after it.
