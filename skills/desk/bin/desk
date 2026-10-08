@@ -1,0 +1,1040 @@
+#!/usr/bin/env python3
+"""desk: the mechanical layer of the personal /desk ledger.
+
+The agent does language work (classify, extract, match, suggest). This CLI
+does everything that must be exact: IDs, frontmatter, ordering, NOW.md,
+moves, and git. Stdlib only; runs on the macOS system python3 (3.9+) so the
+launchd push job needs nothing installed.
+
+Data root: $DESK_ROOT (default ~/projects/desk). Tests pin time with
+$DESK_NOW (YYYY-MM-DDTHH:MM).
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import difflib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(os.environ.get("DESK_ROOT", "~/projects/desk")).expanduser()
+
+KINDS = ("mine", "delegate", "waiting", "ask")
+PRIORITIES = ("P?", "P0", "P1", "P2", "P3")
+NO_PRIORITY = "-"  # waiting + ask items: tracked by nudge / due, not effort
+STATUSES = ("open", "done", "dropped")
+TASK_KEYS = [
+    "id", "title", "kind", "status", "priority", "suggested", "suggested_reason",
+    "pinned", "due", "nudge", "project", "people", "source", "jira", "pr",
+    "created", "updated", "closed",
+]
+PERSON_KEYS = ["id", "name", "aliases", "emails", "org", "role", "urgency_bias"]
+PROJECT_KEYS = ["id", "title", "aliases", "status"]
+MEETING_KEYS = ["id", "title", "date", "attendees", "projects", "source"]
+LIST_KEYS = {"people", "aliases", "emails", "attendees", "projects"}
+SETTABLE = {
+    "title", "kind", "priority", "suggested", "suggested_reason", "due", "nudge",
+    "project", "people", "source", "jira", "pr",
+}
+DUE_SOON_BUSINESS_DAYS = 2
+NUDGE_BUSINESS_DAYS = 3
+P2_SHOWN = 5
+STALE_DAYS = {"P1": 7, "P2": 30, "P3": 90}
+STALE_NEXT = {"P1": "still P1?", "P2": "demote to P3?", "P3": "drop?"}
+PHI_PATTERNS = [
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "SSN-shaped number"),
+    (re.compile(r"\b(DOB|D\.O\.B\.|date of birth)\b", re.I), "date of birth"),
+    (re.compile(r"\bMRN\b|\bmedical record (number|#)", re.I), "medical record number"),
+    (re.compile(r"\bpatient name\b", re.I), "patient name"),
+]
+
+
+class DeskError(Exception):
+    def __init__(self, msg: str, code: int = 2):
+        super().__init__(msg)
+        self.code = code
+
+
+# ---------- time ----------
+
+def now() -> dt.datetime:
+    fixed = os.environ.get("DESK_NOW")
+    if fixed:
+        return dt.datetime.fromisoformat(fixed)
+    return dt.datetime.now().replace(second=0, microsecond=0)
+
+
+def today() -> dt.date:
+    return now().date()
+
+
+def stamp() -> str:
+    return now().strftime("%Y-%m-%dT%H:%M")
+
+
+def add_business_days(d: dt.date, n: int) -> dt.date:
+    while n > 0:
+        d += dt.timedelta(days=1)
+        if d.weekday() < 5:
+            n -= 1
+    return d
+
+
+def parse_date(value: str) -> str:
+    """Accept YYYY-MM-DD, today, tomorrow, +Nd (calendar), +Nbd (business)."""
+    v = value.strip().lower()
+    if v in ("", "none", "-"):
+        return ""
+    if v == "today":
+        return today().isoformat()
+    if v == "tomorrow":
+        return (today() + dt.timedelta(days=1)).isoformat()
+    m = re.fullmatch(r"\+(\d+)(bd|d)", v)
+    if m:
+        n = int(m.group(1))
+        d = add_business_days(today(), n) if m.group(2) == "bd" else today() + dt.timedelta(days=n)
+        return d.isoformat()
+    try:
+        return dt.date.fromisoformat(v).isoformat()
+    except ValueError:
+        raise DeskError(f"bad date '{value}': use YYYY-MM-DD, today, tomorrow, +Nd, or +Nbd")
+
+
+def short_date(iso: str) -> str:
+    d = dt.date.fromisoformat(iso)
+    return d.strftime("%a %m/%d")
+
+
+# ---------- frontmatter ----------
+
+def _fmt_scalar(v: str) -> str:
+    if v == "" or re.search(r"^[\[\]{}\"'&*!|>%@`#-]|: | #", v) or v.strip() != v:
+        return json.dumps(v)
+    return v
+
+
+def parse_doc(text: str) -> tuple[dict, str]:
+    if not text.startswith("---\n"):
+        return {}, text
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        raise DeskError("unterminated frontmatter")
+    meta: dict = {}
+    for line in text[4:end].splitlines():
+        if not line.strip() or ":" not in line:
+            continue
+        key, raw = line.split(":", 1)
+        key, raw = key.strip(), raw.strip()
+        if raw.startswith("[") and raw.endswith("]"):
+            inner = raw[1:-1].strip()
+            meta[key] = [s.strip().strip('"') for s in inner.split(",")] if inner else []
+        elif raw.startswith('"'):
+            meta[key] = json.loads(raw)
+        else:
+            meta[key] = raw
+    return meta, text[end + 5:]
+
+
+def dump_doc(meta: dict, body: str, keys: list) -> str:
+    lines = ["---"]
+    for k in keys + [k for k in meta if k not in keys]:
+        v = meta.get(k, [] if k in LIST_KEYS else "")
+        if isinstance(v, list):
+            lines.append(f"{k}: [{', '.join(v)}]")
+        else:
+            lines.append(f"{k}: {_fmt_scalar(str(v))}")
+    lines.append("---")
+    return "\n".join(lines) + "\n" + body
+
+
+def slugify(text: str, maxlen: int = 50) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s[:maxlen].rstrip("-") or "item"
+
+
+# ---------- storage ----------
+
+def tasks_dir() -> Path:
+    return ROOT / "tasks"
+
+
+def require_root() -> None:
+    if not (ROOT / "tasks").is_dir():
+        raise DeskError(f"no desk at {ROOT}; run `desk init`")
+
+
+def load(path: Path) -> dict:
+    meta, body = parse_doc(path.read_text())
+    meta["_path"] = path
+    meta["_body"] = body
+    return meta
+
+
+def save(item: dict, keys: list) -> None:
+    meta = {k: v for k, v in item.items() if not k.startswith("_")}
+    item["_path"].write_text(dump_doc(meta, item["_body"], keys))
+
+
+def all_tasks(include_closed: bool = False) -> list:
+    base = tasks_dir()
+    paths = sorted(base.glob("T-*.md"))
+    if include_closed:
+        paths += sorted((base / "done").glob("*/T-*.md"))
+    return [load(p) for p in paths]
+
+
+def norm_id(raw: str) -> str:
+    m = re.fullmatch(r"(?i)t?-?0*(\d+)", raw.strip())
+    if not m:
+        raise DeskError(f"bad task id '{raw}'")
+    return f"T-{int(m.group(1)):04d}"
+
+
+def find_task(raw: str) -> dict:
+    tid = norm_id(raw)
+    for t in all_tasks(include_closed=True):
+        if t.get("id") == tid:
+            return t
+    raise DeskError(f"{tid} not found", 3)
+
+
+def next_id() -> str:
+    top = 0
+    for p in list(tasks_dir().glob("T-*.md")) + list((tasks_dir() / "done").glob("*/T-*.md")):
+        m = re.match(r"T-(\d+)", p.name)
+        if m:
+            top = max(top, int(m.group(1)))
+    return f"T-{top + 1:04d}"
+
+
+def entities(kind: str) -> list:
+    return [load(p) for p in sorted((ROOT / kind).glob("*.md"))]
+
+
+def resolve(kind: str, token: str) -> str:
+    """Map free text to an existing person/project slug, or fail with suggestions.
+
+    The agent must never create an entity on its own; unknown names exit 3 so
+    it asks the user the single "new person/project?" question.
+    """
+    t = token.strip().lower()
+    items = entities(kind)
+    exact, partial = [], []
+    for e in items:
+        names = [e["id"].lower()]
+        names += [str(e.get("name") or e.get("title") or "").lower()]
+        names += [a.lower() for a in e.get("aliases", [])]
+        names += [m.lower() for m in e.get("emails", [])]
+        if t in names:
+            exact.append(e["id"])
+            continue
+        first = str(e.get("name", "")).lower().split(" ")[0]
+        if t and (t == first or (len(t) >= 4 and t in names[1])):
+            partial.append(e["id"])
+    if len(exact) == 1:
+        return exact[0]
+    if not exact and len(partial) == 1:
+        return partial[0]
+    cands = exact or partial
+    if not cands:
+        pool = {}
+        for e in items:
+            for n in [e["id"], str(e.get("name") or e.get("title") or "")] + e.get("aliases", []):
+                pool[n.lower()] = e["id"]
+        cands = sorted({pool[m] for m in difflib.get_close_matches(t, list(pool), n=3, cutoff=0.6)})
+        hint = f" close: {', '.join(cands)}." if cands else ""
+        noun = "person" if kind == "people" else "project"
+        raise DeskError(f"UNKNOWN {noun} '{token}'.{hint} Confirm with the user before `desk new-{noun}`.", 3)
+    raise DeskError(f"AMBIGUOUS '{token}': {', '.join(cands)}. Ask the user which.", 3)
+
+
+def resolve_list(kind: str, raw: str) -> list:
+    return [resolve(kind, x) for x in raw.split(",") if x.strip()] if raw else []
+
+
+def display_name(slug: str, people: dict) -> str:
+    return people.get(slug, {}).get("name", slug)
+
+
+# ---------- git ----------
+
+def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=check)
+
+
+def commit(msg: str) -> None:
+    if not (ROOT / ".git").exists():
+        return
+    git("add", "-A")
+    if git("diff", "--cached", "--quiet", check=False).returncode != 0:
+        git("commit", "-q", "-m", msg)
+
+
+def finish(args, msg: str) -> None:
+    render()
+    if not getattr(args, "no_commit", False):
+        commit(msg)
+
+
+# ---------- task helpers ----------
+
+def log_line(item: dict, text: str) -> None:
+    body = item["_body"]
+    entry = f"- {now().strftime('%Y-%m-%d %H:%M')} {text}\n"
+    if "\n## Log\n" not in "\n" + body:
+        body = body.rstrip("\n") + ("\n\n" if body.strip() else "") + "## Log\n"
+    item["_body"] = body.rstrip("\n") + "\n" + entry
+
+
+def receipt(t: dict, people: dict) -> str:
+    parts = [f'{t["id"]} "{t["title"]}"', t["kind"], t.get("project") or "misc"]
+    if t.get("people"):
+        parts.append(", ".join(display_name(p, people) for p in t["people"]))
+    if t.get("due"):
+        parts.append(f"due {short_date(t['due'])}")
+    if t.get("nudge") and t["kind"] == "waiting":
+        parts.append(f"nudge {short_date(t['nudge'])}")
+    if t.get("jira"):
+        parts.append(t["jira"])
+    if t.get("pr"):
+        parts.append(t["pr"])
+    if t["priority"] != NO_PRIORITY:
+        parts.append(t["priority"])
+    if t.get("pinned"):
+        parts.append("pinned")
+    line = " · ".join(parts)
+    if t["priority"] == "P?" and t.get("suggested"):
+        flag = "⚠ suggests P0" if t["suggested"] == "P0" else f"suggests {t['suggested']}"
+        line += f"  {flag} ({t.get('suggested_reason') or 'no reason given'})"
+    return line
+
+
+def apply_kind(t: dict, kind: str) -> None:
+    if kind not in KINDS:
+        raise DeskError(f"kind must be one of {', '.join(KINDS)}")
+    t["kind"] = kind
+    if kind in ("waiting", "ask"):
+        t["priority"] = NO_PRIORITY
+        t["suggested"] = t["suggested_reason"] = ""
+        if kind == "waiting" and not t.get("nudge"):
+            t["nudge"] = add_business_days(today(), NUDGE_BUSINESS_DAYS).isoformat()
+    elif t.get("priority") in ("", NO_PRIORITY, None):
+        t["priority"] = "P?"
+
+
+def set_field(t: dict, key: str, value: str) -> None:
+    if key not in SETTABLE:
+        raise DeskError(f"cannot set '{key}'; settable: {', '.join(sorted(SETTABLE))}")
+    if key == "kind":
+        apply_kind(t, value)
+    elif key == "priority":
+        value = value.upper()
+        if value not in PRIORITIES:
+            raise DeskError(f"priority must be one of {', '.join(PRIORITIES)}")
+        if t["kind"] in ("waiting", "ask"):
+            raise DeskError(f"{t['kind']} items take no priority; set kind first or use nudge/due")
+        t["priority"] = value
+        if value != "P?":
+            t["suggested"] = t["suggested_reason"] = ""
+    elif key == "suggested":
+        value = value.upper()
+        if value not in PRIORITIES[1:] and value != "":
+            raise DeskError("suggested must be P0-P3")
+        t["suggested"] = value
+    elif key in ("due", "nudge"):
+        t[key] = parse_date(value)
+    elif key == "project":
+        t["project"] = resolve("projects", value) if value else "misc"
+    elif key == "people":
+        t["people"] = resolve_list("people", value)
+    else:
+        t[key] = value
+
+
+def close_task(t: dict, status: str, note: str) -> None:
+    t["status"] = status
+    t["closed"] = stamp()
+    t["updated"] = stamp()
+    t["pinned"] = ""
+    log_line(t, f"{status.upper()}{': ' + note if note else ''}")
+    dest = tasks_dir() / "done" / today().strftime("%Y-%m")
+    dest.mkdir(parents=True, exist_ok=True)
+    old = t["_path"]
+    t["_path"] = dest / old.name
+    save(t, TASK_KEYS)
+    old.unlink()
+
+
+# ---------- ordering / NOW ----------
+
+def fifo_key(t: dict):
+    # Pinned first (latest pin on top), then oldest-created first.
+    pinned = t.get("pinned") or ""
+    return (0 if pinned else 1, "" if not pinned else _invert(pinned), t.get("created", ""))
+
+
+def _invert(s: str) -> str:
+    return "".join(chr(0x10FFFF - ord(c)) for c in s)
+
+
+def due_state(t: dict) -> str:
+    if not t.get("due"):
+        return ""
+    d = dt.date.fromisoformat(t["due"])
+    if d < today():
+        return "overdue"
+    if d <= add_business_days(today(), DUE_SOON_BUSINESS_DAYS):
+        return "soon"
+    return ""
+
+
+def line(t: dict, people: dict, show_priority: bool = False) -> str:
+    bits = [t["title"]]
+    meta = []
+    if show_priority and t["priority"] != NO_PRIORITY:
+        meta.append(t["priority"])
+    if t.get("project") and t["project"] != "misc":
+        meta.append(t["project"])
+    if t.get("people"):
+        meta.append(", ".join(display_name(p, people) for p in t["people"]))
+    if t["kind"] == "delegate":
+        meta.append("→delegate")
+    if t.get("due"):
+        state = due_state(t)
+        mark = "🔴 OVERDUE " if state == "overdue" else ""
+        meta.append(f"{mark}due {short_date(t['due'])}")
+    if t.get("jira"):
+        meta.append(t["jira"])
+    if t.get("pinned"):
+        meta.append("📌")
+    return f"- **{t['id']}** {bits[0]}" + (f" · {' · '.join(meta)}" if meta else "")
+
+
+def build_now() -> str:
+    people = {p["id"]: p for p in entities("people")}
+    open_ = [t for t in all_tasks() if t.get("status") == "open"]
+    effort = sorted([t for t in open_ if t["kind"] in ("mine", "delegate")], key=fifo_key)
+    untriaged = [t for t in effort if t["priority"] == "P?"]
+    hot = [t for t in untriaged if t.get("suggested") == "P0"]
+    p0 = [t for t in effort if t["priority"] == "P0"]
+    dated = [t for t in open_ if due_state(t) and t["priority"] != "P0" and t["kind"] != "waiting"]
+    dated_ids = {t["id"] for t in dated}
+    dated.sort(key=lambda t: t["due"])
+    bucket = lambda p: [t for t in effort if t["priority"] == p and t["id"] not in dated_ids]
+    p1, p2, p3 = bucket("P1"), bucket("P2"), bucket("P3")
+    delegates = [t for t in effort if t["kind"] == "delegate"]
+    waiting = sorted([t for t in open_ if t["kind"] == "waiting"], key=lambda t: t.get("nudge") or "9")
+    chase = [t for t in waiting if t.get("nudge") and t["nudge"] <= today().isoformat()]
+    asks = [t for t in open_ if t["kind"] == "ask"]
+
+    n = now()
+    out = [f"# NOW, {n.strftime('%a %m/%d %H:%M')}", "",
+           "_Generated by `desk render`. Do not edit; changes are overwritten._", ""]
+    if n.weekday() == 4 and n.hour >= 12:
+        week = n.strftime("%G-W%V")
+        if not (ROOT / "reports" / f"{week}.md").exists():
+            out += [f"> 📣 Friday: leadership report for {week} not drafted → `/desk report`", ""]
+    if hot:
+        out.append(f"## ⚠ Suggested P0, confirm ({len(hot)})")
+        out += [line(t, people) + f" · _{t.get('suggested_reason', '')}_" for t in hot] + [""]
+    if dated:
+        out.append(f"## Due soon / overdue ({len(dated)})")
+        out += [line(t, people, show_priority=True) for t in dated] + [""]
+    out.append(f"## P0: fires ({len(p0)})")
+    out += [line(t, people) for t in p0] or ["- none"]
+    out += ["", f"## P1: now, if no fires ({len(p1)})"]
+    out += [line(t, people) for t in p1] or ["- none"]
+    out += ["", f"## P2: planned ({len(p2)})" + (f", top {P2_SHOWN}" if len(p2) > P2_SHOWN else "")]
+    out += [line(t, people) for t in p2[:P2_SHOWN]] or ["- none"]
+    out.append("")
+    if delegates:
+        out.append(f"## Delegate: hand off ({len(delegates)})")
+        out.append("- " + " · ".join(f"**{t['id']}** {t['title']}" for t in delegates))
+        out.append("")
+    out.append(f"## Waiting: {len(chase)} to chase, {len(waiting)} total")
+    for t in chase:
+        who = ", ".join(display_name(p, people) for p in t.get("people", [])) or "?"
+        out.append(f"- chase **{who}** re **{t['id']}** {t['title']}" + (f" · {t['jira']}" if t.get("jira") else "")
+                   + f" · nudge {short_date(t['nudge'])}")
+    if not chase:
+        out.append("- nothing to chase")
+    out.append("")
+    if asks:
+        per: dict = {}
+        for t in asks:
+            for p in t.get("people") or ["(no one)"]:
+                per[p] = per.get(p, 0) + 1
+        out.append("## Asks by person → `/desk prep <person>`")
+        out.append("- " + " · ".join(f"{display_name(p, people)} ({c})" for p, c in sorted(per.items(), key=lambda x: -x[1])))
+        out.append("")
+    rest = len(untriaged) - len(hot)
+    out.append(f"**Untriaged:** {len(untriaged)}" + (f" ({rest} without P0 suggestion)" if hot else "")
+               + (" → `/desk triage`" if untriaged else "") + f" · **P3 someday:** {len(p3)}")
+    return "\n".join(out) + "\n"
+
+
+def render() -> str:
+    text = build_now()
+    (ROOT / "NOW.md").write_text(text)
+    return text
+
+
+# ---------- commands ----------
+
+def cmd_init(args) -> None:
+    for d in ("tasks/done", "meetings", "people", "projects", "ref", "reports"):
+        (ROOT / d).mkdir(parents=True, exist_ok=True)
+    misc = ROOT / "projects" / "misc.md"
+    if not misc.exists():
+        misc.write_text(dump_doc({"id": "misc", "title": "Misc", "aliases": [], "status": "active"},
+                                 "\nCatch-all for tasks and notes with no project.\n", PROJECT_KEYS))
+    render()
+    print(f"desk ready at {ROOT}")
+
+
+def cmd_add(args) -> None:
+    require_root()
+    tid = next_id()
+    t = {k: "" for k in TASK_KEYS}
+    t.update(id=tid, title=args.title.strip(), status="open", created=stamp(), updated=stamp(),
+             people=[], priority="P?", source=args.source or "")
+    apply_kind(t, args.kind)
+    if args.priority:
+        set_field(t, "priority", args.priority)
+    if args.suggest:
+        if t["kind"] in ("waiting", "ask"):
+            raise DeskError(f"{t['kind']} items take no priority suggestion")
+        set_field(t, "suggested", args.suggest)
+        t["suggested_reason"] = args.reason or ""
+    for key in ("due", "nudge", "jira", "pr"):
+        if getattr(args, key):
+            set_field(t, key, getattr(args, key))
+    t["project"] = resolve("projects", args.project) if args.project else "misc"
+    t["people"] = resolve_list("people", args.people or "")
+    if args.pin:
+        t["pinned"] = stamp()
+    body = f"\n{args.body.strip()}\n" if args.body else "\n"
+    t["_body"] = body
+    t["_path"] = tasks_dir() / f"{tid}-{slugify(t['title'])}.md"
+    save(t, TASK_KEYS)
+    people = {p["id"]: p for p in entities("people")}
+    print("→ " + receipt(t, people))
+    finish(args, f"desk: add {tid}")
+
+
+def cmd_set(args) -> None:
+    t = find_task(args.id)
+    for pair in args.pairs:
+        if "=" not in pair:
+            raise DeskError(f"expected key=value, got '{pair}'")
+        k, v = pair.split("=", 1)
+        set_field(t, k.strip(), v.strip())
+    t["updated"] = stamp()
+    save(t, TASK_KEYS)
+    print("→ " + receipt(t, {p["id"]: p for p in entities("people")}))
+    finish(args, f"desk: set {t['id']}")
+
+
+def cmd_log(args) -> None:
+    t = find_task(args.id)
+    log_line(t, args.text.strip())
+    t["updated"] = stamp()
+    save(t, TASK_KEYS)
+    print(f"→ {t['id']} log +1 · ({t['priority'] if t['priority'] != NO_PRIORITY else t['kind']})")
+    finish(args, f"desk: log {t['id']}")
+
+
+def cmd_done(args) -> None:
+    t = find_task(args.id)
+    if t["status"] != "open":
+        raise DeskError(f"{t['id']} already {t['status']}")
+    if t["kind"] == "delegate" and not args.force:
+        raise DeskError(
+            f"{t['id']} is a delegate item. Ask the user who it went to and the ticket key, then "
+            f"`desk handoff {t['id']} --to <person> [--jira KEY]`. Use --force only if it needs no follow-up.", 4)
+    close_task(t, args.status, args.note or "")
+    print(f"→ {t['id']} {args.status} · {t['title']}")
+    finish(args, f"desk: {args.status} {t['id']}")
+
+
+def cmd_reopen(args) -> None:
+    t = find_task(args.id)
+    if t["status"] == "open":
+        raise DeskError(f"{t['id']} is already open")
+    t["status"], t["closed"], t["updated"] = "open", "", stamp()
+    log_line(t, f"REOPENED{': ' + args.note if args.note else ''}")
+    old = t["_path"]
+    t["_path"] = tasks_dir() / old.name
+    save(t, TASK_KEYS)
+    old.unlink()
+    print(f"→ {t['id']} reopened")
+    finish(args, f"desk: reopen {t['id']}")
+
+
+def cmd_handoff(args) -> None:
+    t = find_task(args.id)
+    if t["kind"] != "delegate":
+        raise DeskError(f"{t['id']} is {t['kind']}, not delegate")
+    to = resolve_list("people", args.to)
+    t["people"] = list(dict.fromkeys(t.get("people", []) + to))
+    if args.jira:
+        t["jira"] = args.jira
+    t["nudge"] = parse_date(args.nudge) if args.nudge else ""
+    apply_kind(t, "waiting")
+    t["updated"] = stamp()
+    who = ", ".join(display_name(p, {p["id"]: p for p in entities("people")}) for p in to)
+    log_line(t, f"Handed off to {who}" + (f" ({args.jira})" if args.jira else ""))
+    save(t, TASK_KEYS)
+    print("→ " + receipt(t, {p["id"]: p for p in entities("people")}))
+    finish(args, f"desk: handoff {t['id']}")
+
+
+def cmd_chased(args) -> None:
+    t = find_task(args.id)
+    if t["kind"] != "waiting":
+        raise DeskError(f"{t['id']} is {t['kind']}, not waiting")
+    t["nudge"] = parse_date(args.next) if args.next else add_business_days(today(), NUDGE_BUSINESS_DAYS).isoformat()
+    t["updated"] = stamp()
+    log_line(t, "Chased" + (f": {args.note}" if args.note else ""))
+    save(t, TASK_KEYS)
+    print(f"→ {t['id']} chased · next nudge {short_date(t['nudge'])}")
+    finish(args, f"desk: chased {t['id']}")
+
+
+def cmd_pin(args) -> None:
+    t = find_task(args.id)
+    t["pinned"] = stamp() if args.pin else ""
+    t["updated"] = stamp()
+    save(t, TASK_KEYS)
+    print(f"→ {t['id']} {'pinned to top of ' + t['priority'] if args.pin else 'unpinned'}")
+    finish(args, f"desk: {'pin' if args.pin else 'unpin'} {t['id']}")
+
+
+def cmd_show(args) -> None:
+    print(find_task(args.id)["_path"].read_text(), end="")
+
+
+def filter_tasks(args) -> list:
+    ts = all_tasks(include_closed=args.status != "open")
+    if args.status != "all":
+        ts = [t for t in ts if t.get("status") == args.status]
+    if args.kind:
+        ts = [t for t in ts if t["kind"] in args.kind.split(",")]
+    if args.priority:
+        ts = [t for t in ts if t["priority"] in args.priority.upper().split(",")]
+    if args.project:
+        slug = resolve("projects", args.project)
+        ts = [t for t in ts if t.get("project") == slug]
+    if args.person:
+        slug = resolve("people", args.person)
+        ts = [t for t in ts if slug in t.get("people", [])]
+    if args.since:
+        since = parse_date(args.since)
+        field = "closed" if args.status in ("done", "dropped") else "updated"
+        ts = [t for t in ts if (t.get(field) or "")[:10] >= since]
+    return sorted(ts, key=lambda t: (PRIORITIES.index(t["priority"]) if t["priority"] in PRIORITIES else 9, fifo_key(t)))
+
+
+def cmd_list(args) -> None:
+    ts = filter_tasks(args)
+    if args.json:
+        print(json.dumps([{k: v for k, v in t.items() if not k.startswith("_")} | {"path": str(t["_path"])}
+                          for t in ts], indent=1))
+        return
+    people = {p["id"]: p for p in entities("people")}
+    for t in ts:
+        print(receipt(t, people) + ("" if t["status"] == "open" else f" · {t['status']} {t.get('closed', '')[:10]}"))
+    if not ts:
+        print("(none)")
+
+
+def cmd_triage(args) -> None:
+    people = {p["id"]: p for p in entities("people")}
+    ts = [t for t in all_tasks() if t.get("status") == "open" and t["priority"] == "P?"]
+    ts.sort(key=lambda t: (t.get("suggested") != "P0", t.get("created", "")))
+    for t in ts:
+        print(receipt(t, people))
+    if not ts:
+        print("(inbox zero: nothing untriaged)")
+
+
+def meetings(since: str = "", until: str = "") -> list:
+    out = []
+    for p in sorted((ROOT / "meetings").glob("*/*/*.md")):
+        m = load(p)
+        d = m.get("date", "")
+        if (not since or d >= since) and (not until or d <= until):
+            out.append(m)
+    return out
+
+
+def section(body: str, name: str) -> str:
+    m = re.search(rf"^## {re.escape(name)}\s*\n(.*?)(?=^## |\Z)", body, re.M | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def cmd_prep(args) -> None:
+    slug = resolve("people", args.person)
+    person = load(ROOT / "people" / f"{slug}.md")
+    people = {p["id"]: p for p in entities("people")}
+    mine = [t for t in all_tasks() if t.get("status") == "open" and slug in t.get("people", [])]
+    print(f"# Prep: {person.get('name')} ({person.get('org', '')}{', ' + person['role'] if person.get('role') else ''})\n")
+    for kind, label in (("ask", "Raise with them"), ("waiting", "They owe you"),
+                        ("delegate", "To hand to them"), ("mine", "You owe them / involves them")):
+        items = [t for t in mine if t["kind"] == kind]
+        print(f"## {label} ({len(items)})")
+        print("\n".join(receipt(t, people) for t in items) or "- none")
+        print()
+    ms = [m for m in meetings() if slug in m.get("attendees", [])][-args.meetings:]
+    print(f"## Recent meetings ({len(ms)})")
+    for m in reversed(ms):
+        print(f"- {m['date']} {m['title']} ({m['_path'].relative_to(ROOT)})")
+        summ = section(m["_body"], "Summary")
+        if summ:
+            print("  " + summ.replace("\n", "\n  ")[:600])
+    notes = section(person["_body"], "1:1 log")
+    if notes:
+        print("\n## 1:1 log (latest)\n" + "\n".join(notes.splitlines()[-args.meetings * 3:]))
+
+
+def cmd_project(args) -> None:
+    slug = resolve("projects", args.project)
+    proj = load(ROOT / "projects" / f"{slug}.md")
+    people = {p["id"]: p for p in entities("people")}
+    print(f"# {proj.get('title', slug)} [{proj.get('status', '')}]\n")
+    print(proj["_body"].strip() + "\n")
+    open_ = [t for t in all_tasks() if t.get("status") == "open" and t.get("project") == slug]
+    open_.sort(key=lambda t: (PRIORITIES.index(t["priority"]) if t["priority"] in PRIORITIES else 9, fifo_key(t)))
+    print(f"## Open tasks ({len(open_)})")
+    print("\n".join(receipt(t, people) for t in open_) or "- none")
+    since = (today() - dt.timedelta(days=14)).isoformat()
+    done = [t for t in all_tasks(True) if t.get("status") == "done" and t.get("project") == slug
+            and (t.get("closed") or "")[:10] >= since]
+    print(f"\n## Done, last 14 days ({len(done)})")
+    print("\n".join(f"- {t['id']} {t['title']} ({t['closed'][:10]})" for t in done) or "- none")
+    ms = [m for m in meetings() if slug in m.get("projects", [])][-5:]
+    print(f"\n## Recent meetings ({len(ms)})")
+    print("\n".join(f"- {m['date']} {m['title']} ({m['_path'].relative_to(ROOT)})" for m in reversed(ms)) or "- none")
+
+
+def cmd_digest(args) -> None:
+    """Raw material for the Friday leadership report and the weekly review."""
+    start = parse_date(args.since) if args.since else (today() - dt.timedelta(days=today().weekday())).isoformat()
+    end = parse_date(args.until) if args.until else today().isoformat()
+    people = {p["id"]: p for p in entities("people")}
+    print(f"# Digest {start} → {end}\n")
+    done = [t for t in all_tasks(True) if t.get("status") == "done" and start <= (t.get("closed") or "")[:10] <= end]
+    by_proj: dict = {}
+    for t in done:
+        by_proj.setdefault(t.get("project") or "misc", []).append(t)
+    print(f"## Done ({len(done)})")
+    for proj, ts in sorted(by_proj.items()):
+        print(f"### {proj}")
+        for t in ts:
+            last = [l for l in t["_body"].splitlines() if l.startswith("- ")][-3:]
+            print(f"- {t['id']} {t['title']}" + (f" [{t['jira']}]" if t.get("jira") else ""))
+            for l in last:
+                print(f"    {l[2:]}")
+    print("\n## Decisions (meetings in range)")
+    found = False
+    for m in meetings(start, end):
+        dec = section(m["_body"], "Decisions")
+        if dec and dec.lower() not in ("none", "- none"):
+            found = True
+            print(f"### {m['date']} {m['title']}\n{dec}")
+    if not found:
+        print("- none")
+    open_ = [t for t in all_tasks() if t.get("status") == "open"]
+    on_deck = sorted([t for t in open_ if t["priority"] in ("P0", "P1") or due_state(t)
+                      or (t.get("due") and t["due"] <= add_business_days(today(), 5).isoformat())],
+                     key=lambda t: (PRIORITIES.index(t["priority"]) if t["priority"] in PRIORITIES else 9, fifo_key(t)))
+    print(f"\n## On deck ({len(on_deck)})")
+    print("\n".join(receipt(t, people) for t in on_deck) or "- none")
+    cold = [t for t in open_ if t["kind"] == "waiting" and t.get("nudge") and t["nudge"] < today().isoformat()]
+    print(f"\n## Risks: waiting gone past nudge ({len(cold)})")
+    print("\n".join(receipt(t, people) for t in cold) or "- none")
+
+
+def cmd_stale(args) -> None:
+    people = {p["id"]: p for p in entities("people")}
+    hits = []
+    for t in all_tasks():
+        if t.get("status") != "open" or t["priority"] not in STALE_DAYS:
+            continue
+        age = (today() - dt.date.fromisoformat(t["updated"][:10])).days
+        if age >= STALE_DAYS[t["priority"]]:
+            hits.append((t, age))
+    for t, age in sorted(hits, key=lambda x: -x[1]):
+        print(f"{receipt(t, people)} · untouched {age}d → {STALE_NEXT[t['priority']]}")
+    if not hits:
+        print("(nothing stale)")
+
+
+def cmd_new_person(args) -> None:
+    require_root()
+    slug = slugify(args.name)
+    path = ROOT / "people" / f"{slug}.md"
+    if path.exists():
+        raise DeskError(f"person {slug} exists")
+    meta = {"id": slug, "name": args.name.strip(), "aliases": _csv(args.alias), "emails": _csv(args.email),
+            "org": args.org or "", "role": args.role or "", "urgency_bias": ""}
+    path.write_text(dump_doc(meta, "\n## Notes\n\n## 1:1 log\n", PERSON_KEYS))
+    print(f"→ person {slug}")
+    finish(args, f"desk: new person {slug}")
+
+
+def cmd_new_project(args) -> None:
+    require_root()
+    slug = slugify(args.slug)
+    path = ROOT / "projects" / f"{slug}.md"
+    if path.exists():
+        raise DeskError(f"project {slug} exists")
+    meta = {"id": slug, "title": args.title or args.slug, "aliases": _csv(args.alias), "status": "active"}
+    path.write_text(dump_doc(meta, "\n## Status\n\n## Key facts\n\n## Decisions\n\n## Links\n", PROJECT_KEYS))
+    print(f"→ project {slug}")
+    finish(args, f"desk: new project {slug}")
+
+
+def cmd_new_meeting(args) -> None:
+    require_root()
+    date = parse_date(args.date) if args.date else today().isoformat()
+    d = dt.date.fromisoformat(date)
+    folder = ROOT / "meetings" / d.strftime("%Y") / d.strftime("%m")
+    folder.mkdir(parents=True, exist_ok=True)
+    base = f"{date}-{slugify(args.title, 40)}"
+    name, n = base, 2
+    while (folder / f"{name}.md").exists():
+        name, n = f"{base}-{n}", n + 1
+    meta = {"id": f"M-{name}", "title": args.title, "date": date,
+            "attendees": resolve_list("people", args.people or ""),
+            "projects": resolve_list("projects", args.projects or ""), "source": args.source or ""}
+    body = ("\n## Summary\n\n## Decisions\n\n## Tasks\n\n## Key info\n\n## Open questions\n\n"
+            "## Raw\n\n<details><summary>Raw (redacted)</summary>\n\n</details>\n")
+    path = folder / f"{name}.md"
+    path.write_text(dump_doc(meta, body, MEETING_KEYS))
+    print(f"→ {meta['id']} {path}")
+    if not args.no_commit:
+        commit(f"desk: meeting {meta['id']}")
+
+
+def cmd_match(args) -> None:
+    for kind in ("people", "projects"):
+        try:
+            print(f"{kind}: {resolve(kind, args.text)}")
+        except DeskError as e:
+            print(f"{kind}: {e}")
+
+
+def phi_hits(text: str) -> list:
+    hits = []
+    for i, ln in enumerate(text.splitlines(), 1):
+        for rx, label in PHI_PATTERNS:
+            if rx.search(ln):
+                hits.append((i, label, ln.strip()[:80]))
+    return hits
+
+
+def cmd_phi_scan(args) -> None:
+    text = sys.stdin.read() if args.file == "-" else Path(args.file).expanduser().read_text()
+    hits = phi_hits(text)
+    for i, label, snippet in hits:
+        print(f"line {i}: {label}: {snippet}")
+    if hits:
+        raise DeskError(f"{len(hits)} possible PHI hit(s): redact before writing", 5)
+    print("clean")
+
+
+def cmd_lint(args) -> None:
+    require_root()
+    problems = []
+    people = {p["id"] for p in entities("people")}
+    projects = {p["id"] for p in entities("projects")}
+    seen = {}
+    for t in all_tasks(include_closed=True):
+        tid, where = t.get("id", "?"), t["_path"].relative_to(ROOT)
+        if tid in seen:
+            problems.append(f"{where}: duplicate id {tid} (also {seen[tid]})")
+        seen[tid] = where
+        if not t["_path"].name.startswith(tid + "-"):
+            problems.append(f"{where}: filename does not match id {tid}")
+        if t.get("kind") not in KINDS:
+            problems.append(f"{where}: bad kind {t.get('kind')}")
+        if t.get("status") not in STATUSES:
+            problems.append(f"{where}: bad status {t.get('status')}")
+        expect_none = t.get("kind") in ("waiting", "ask")
+        if expect_none and t.get("priority") != NO_PRIORITY:
+            problems.append(f"{where}: {t['kind']} item must have priority '-'")
+        if not expect_none and t.get("priority") not in PRIORITIES:
+            problems.append(f"{where}: bad priority {t.get('priority')}")
+        in_done = t["_path"].parent != tasks_dir()
+        if in_done != (t.get("status") != "open"):
+            problems.append(f"{where}: status {t.get('status')} in wrong folder")
+        if t.get("project") and t["project"] not in projects:
+            problems.append(f"{where}: unknown project {t['project']}")
+        for p in t.get("people", []):
+            if p not in people:
+                problems.append(f"{where}: unknown person {p}")
+        for key in ("due", "nudge"):
+            if t.get(key):
+                try:
+                    dt.date.fromisoformat(t[key])
+                except ValueError:
+                    problems.append(f"{where}: bad {key} {t[key]}")
+    for path in list(ROOT.glob("meetings/*/*/*.md")) + list(ROOT.glob("tasks/**/*.md")) + list(ROOT.glob("ref/*.md")):
+        for i, label, _ in phi_hits(path.read_text()):
+            problems.append(f"{path.relative_to(ROOT)}:{i}: possible PHI ({label})")
+    for p in problems:
+        print(p)
+    if problems:
+        raise DeskError(f"{len(problems)} problem(s)", 1)
+    print("lint clean")
+
+
+def cmd_render(args) -> None:
+    require_root()
+    text = render()
+    if not args.quiet:
+        print(text, end="")
+
+
+def cmd_commit(args) -> None:
+    render()
+    commit(args.message or f"desk: sync {stamp()}")
+    print("committed")
+
+
+def cmd_push(args) -> None:
+    commit(f"desk: sync {stamp()}")
+    if not git("remote", check=False).stdout.strip():
+        raise DeskError("no git remote configured")
+    r = git("push", "-q", check=False)
+    if r.returncode != 0:
+        raise DeskError(f"push failed: {r.stderr.strip()}")
+    print("pushed")
+
+
+def _csv(raw) -> list:
+    return [x.strip() for x in (raw or "").split(",") if x.strip()]
+
+
+# ---------- CLI ----------
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="desk", description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def cmd(name, fn, help_, commits=True):
+        p = sub.add_parser(name, help=help_)
+        p.set_defaults(fn=fn)
+        if commits:
+            p.add_argument("--no-commit", action="store_true", help="skip git commit (batch writes; run `desk commit` after)")
+        return p
+
+    cmd("init", cmd_init, "create the data layout (idempotent)", commits=False)
+    p = cmd("add", cmd_add, "create a task")
+    p.add_argument("title")
+    p.add_argument("--kind", default="mine", choices=KINDS)
+    p.add_argument("--priority", help="P0-P3; omit to leave untriaged (P?)")
+    p.add_argument("--suggest", help="suggested level when untriaged")
+    p.add_argument("--reason", help="why the suggestion")
+    p.add_argument("--due")
+    p.add_argument("--nudge", help="waiting only; default +3 business days")
+    p.add_argument("--project")
+    p.add_argument("--people", help="comma list of names/aliases/emails")
+    p.add_argument("--source", help="meeting id, person, slack, email, ...")
+    p.add_argument("--jira")
+    p.add_argument("--pr")
+    p.add_argument("--body")
+    p.add_argument("--pin", action="store_true")
+    p = cmd("set", cmd_set, "set fields: desk set 143 priority=P1 project=pace")
+    p.add_argument("id")
+    p.add_argument("pairs", nargs="+")
+    p = cmd("log", cmd_log, "append a progress note")
+    p.add_argument("id")
+    p.add_argument("text")
+    for name, status in (("done", "done"), ("drop", "dropped")):
+        p = cmd(name, cmd_done, f"mark {status} and archive")
+        p.add_argument("id")
+        p.add_argument("note", nargs="?")
+        p.add_argument("--force", action="store_true", help="close a delegate item without handoff")
+        p.set_defaults(status=status)
+    p = cmd("reopen", cmd_reopen, "reopen a closed task")
+    p.add_argument("id")
+    p.add_argument("note", nargs="?")
+    p = cmd("handoff", cmd_handoff, "delegate → waiting")
+    p.add_argument("id")
+    p.add_argument("--to", required=True)
+    p.add_argument("--jira")
+    p.add_argument("--nudge")
+    p = cmd("chased", cmd_chased, "record a chase on a waiting item and push the nudge")
+    p.add_argument("id")
+    p.add_argument("note", nargs="?")
+    p.add_argument("--next", help="next nudge date; default +3 business days")
+    for name, pin in (("top", True), ("unpin", False)):
+        p = cmd(name, cmd_pin, "pin to front of its bucket" if pin else "remove pin")
+        p.add_argument("id")
+        p.set_defaults(pin=pin)
+    p = cmd("show", cmd_show, "print a task file", commits=False)
+    p.add_argument("id")
+    p = cmd("list", cmd_list, "query tasks", commits=False)
+    p.add_argument("--status", default="open", choices=STATUSES + ("all",))
+    p.add_argument("--kind")
+    p.add_argument("--priority")
+    p.add_argument("--project")
+    p.add_argument("--person")
+    p.add_argument("--since")
+    p.add_argument("--json", action="store_true")
+    cmd("triage", cmd_triage, "list untriaged, suggested-P0 first", commits=False)
+    p = cmd("prep", cmd_prep, "1:1 prep for a person", commits=False)
+    p.add_argument("person")
+    p.add_argument("--meetings", type=int, default=3)
+    p = cmd("project", cmd_project, "project rollup", commits=False)
+    p.add_argument("project")
+    p = cmd("digest", cmd_digest, "done/decisions/on-deck/risks for a range (report + week)", commits=False)
+    p.add_argument("--since")
+    p.add_argument("--until")
+    cmd("stale", cmd_stale, "items past staleness thresholds", commits=False)
+    p = cmd("new-person", cmd_new_person, "create a person (only after the user confirms)")
+    p.add_argument("name")
+    p.add_argument("--email")
+    p.add_argument("--alias")
+    p.add_argument("--org")
+    p.add_argument("--role")
+    p = cmd("new-project", cmd_new_project, "create a project (only after the user confirms)")
+    p.add_argument("slug")
+    p.add_argument("--title")
+    p.add_argument("--alias")
+    p = cmd("new-meeting", cmd_new_meeting, "create a meeting file from the template")
+    p.add_argument("title")
+    p.add_argument("--date")
+    p.add_argument("--people")
+    p.add_argument("--projects")
+    p.add_argument("--source")
+    p = cmd("match", cmd_match, "resolve text to a person/project", commits=False)
+    p.add_argument("text")
+    p = cmd("phi-scan", cmd_phi_scan, "flag obvious patient identifiers in a file or stdin (-)", commits=False)
+    p.add_argument("file")
+    cmd("lint", cmd_lint, "validate the whole desk", commits=False)
+    p = cmd("render", cmd_render, "regenerate and print NOW.md", commits=False)
+    p.add_argument("-q", "--quiet", action="store_true")
+    p = cmd("commit", cmd_commit, "render + commit everything", commits=False)
+    p.add_argument("message", nargs="?")
+    cmd("push", cmd_push, "commit stragglers and push", commits=False)
+    sub.add_parser("root", help="print the data root").set_defaults(fn=lambda a: print(ROOT))
+
+    args = ap.parse_args(argv)
+    try:
+        args.fn(args)
+    except DeskError as e:
+        print(f"desk: {e}", file=sys.stderr)
+        return e.code
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
