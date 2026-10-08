@@ -64,6 +64,20 @@ Print the CLI receipt line(s) as-is. The user corrects tersely (`143 → pace, P
 
 ## Verbs
 
+- **`/desk help`** → print this cheat sheet verbatim:
+  ```
+  /desk <anything>          capture (task, ref fact, transcript, file path, photo)
+  /desk                     show NOW board
+  /desk 143 <text>          progress note        /desk 143 done [note]   close
+  /desk 143 P1 | → pace | due fri                /desk 143 drop          won't do
+  /desk 150 top | unpin     pin to front of bucket
+  /desk triage              walk untriaged (0/1/2/3, x drop, w <who>, enter = accept)
+  /desk prep <person>       1:1 prep             /desk project <name>    rollup
+  /desk find <query>        search everything    /desk day               today's top 3
+  /desk week                weekly review        /desk report            Friday leadership summary
+  /desk import <file>       bulk extract         /desk push              push to GitHub now
+  kinds: mine · delegate · waiting · ask    priority: P0 fire · P1 now · P2 planned · P3 someday
+  ```
 - **`/desk`** (no args) → `desk render` and show it. Add a one-line nudge if there are suggested P0s, overdue items, or chases.
 - **`/desk triage`** → `desk triage`. Walk the items one at a time: show the receipt + suggestion and accept `0/1/2/3`, `x` (drop), `w <person>` (make waiting), `enter` (accept suggestion), `s` (skip). Apply each with `desk set`/`desk drop`.
 - **`/desk prep <person>`** → `desk prep <person>`, then a 5-line brief: what to raise, what to chase, what to hand off, context from recent meetings.

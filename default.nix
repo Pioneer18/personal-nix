@@ -13,6 +13,7 @@ in {
     ./mcp.nix
     ./modules/proxy-rust-services.nix
     ./modules/proxy-boot.nix
+    ./modules/desk-push.nix
   ];
 
   programs.zsh.shellAliases = {
