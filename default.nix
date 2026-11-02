@@ -14,6 +14,7 @@ in {
     ./modules/proxy-rust-services.nix
     ./modules/proxy-boot.nix
     ./modules/desk-push.nix
+    ./modules/group-portal-bug-scan.nix
   ];
 
   programs.zsh.shellAliases = {

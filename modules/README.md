@@ -7,6 +7,7 @@ Pulled-out home-manager modules for things bigger than a few lines that don't be
 | Module | Status | Description |
 |---|---|---|
 | `proxy-boot.nix` | **DRAFT** (not yet imported) | LaunchAgent that opens fullscreen Ghostty with the "proxy" tmux session at user login. M1 / shell-01 of the agentic shell v1.0 plan. |
+| `group-portal-bug-scan.nix` | imported | Daily 07:00 headless Claude scan of Group Portal prod logs; opens `fix/scan-*` PRs, never merges or deploys. Script + prompt + deny list in `scripts/group-portal-bug-scan.*`. |
 
 ## Enabling a module
 
